@@ -19,6 +19,7 @@
 //! representations.
 use std::cmp::Ordering;
 use std::mem;
+use std::fmt;
 use std::str::from_utf8;
 
 use byteorder::{BigEndian, ByteOrder};
@@ -92,6 +93,12 @@ impl From<Vec<u32>> for Int96 {
         let mut result = Self::new();
         result.set_data(buf[0], buf[1], buf[2]);
         result
+    }
+}
+
+impl fmt::Display for Int96 {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self.data())
     }
 }
 
@@ -213,6 +220,12 @@ impl PartialEq for ByteArray {
             (None, None) => true,
             _ => false,
         }
+    }
+}
+
+impl fmt::Display for ByteArray {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self.data())
     }
 }
 
@@ -429,6 +442,7 @@ impl AsBytes for str {
 pub trait DataType: 'static {
     type T: std::cmp::PartialEq
         + std::fmt::Debug
+        + std::fmt::Display
         + std::default::Default
         + std::clone::Clone
         + AsBytes

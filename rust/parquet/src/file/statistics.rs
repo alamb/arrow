@@ -423,12 +423,12 @@ impl<T: DataType> fmt::Display for TypedStatistics<T> {
         write!(f, "{{")?;
         write!(f, "min: ")?;
         match self.min {
-            Some(ref value) => self.value_fmt(f, value)?,
+            Some(ref value) => write!(f, "{}", value)?,
             None => write!(f, "N/A")?,
         }
         write!(f, ", max: ")?;
         match self.max {
-            Some(ref value) => self.value_fmt(f, value)?,
+            Some(ref value) => write!(f, "{}", value)?,
             None => write!(f, "N/A")?,
         }
         write!(f, ", distinct_count: ")?;
@@ -464,37 +464,6 @@ impl<T: DataType> cmp::PartialEq for TypedStatistics<T> {
             && self.distinct_count == other.distinct_count
             && self.null_count == other.null_count
             && self.is_min_max_deprecated == other.is_min_max_deprecated
-    }
-}
-
-/// Trait to provide a specific write format for values.
-/// For example, we should display vector slices for byte array types, and original
-/// values for other types.
-trait ValueDisplay<T: DataType> {
-    fn value_fmt(&self, f: &mut fmt::Formatter, value: &T::T) -> fmt::Result;
-}
-
-impl<T: DataType> ValueDisplay<T> for TypedStatistics<T> {
-    default fn value_fmt(&self, f: &mut fmt::Formatter, value: &T::T) -> fmt::Result {
-        write!(f, "{:?}", value)
-    }
-}
-
-impl ValueDisplay<Int96Type> for TypedStatistics<Int96Type> {
-    fn value_fmt(&self, f: &mut fmt::Formatter, value: &Int96) -> fmt::Result {
-        write!(f, "{:?}", value.data())
-    }
-}
-
-impl ValueDisplay<ByteArrayType> for TypedStatistics<ByteArrayType> {
-    fn value_fmt(&self, f: &mut fmt::Formatter, value: &ByteArray) -> fmt::Result {
-        write!(f, "{:?}", value.data())
-    }
-}
-
-impl ValueDisplay<FixedLenByteArrayType> for TypedStatistics<FixedLenByteArrayType> {
-    fn value_fmt(&self, f: &mut fmt::Formatter, value: &ByteArray) -> fmt::Result {
-        write!(f, "{:?}", value.data())
     }
 }
 
