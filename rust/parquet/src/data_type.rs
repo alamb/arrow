@@ -437,17 +437,35 @@ impl AsBytes for str {
     }
 }
 
-/// Contains the Parquet physical type information as well as the Rust primitive type
-/// presentation.
-pub trait DataType: 'static {
-    type T: std::cmp::PartialEq
+mod private {
+    /// Sealed trait to start to remove specialisation from implementations
+    ///
+    /// This is done to force the associated value type to be unimplementable outside of this
+    /// crate, and thus hint to the type system (and end user) traits are public for the contract
+    /// and not for extension.
+    pub trait ParquetValueType : std::cmp::PartialEq
         + std::fmt::Debug
         + std::fmt::Display
         + std::default::Default
         + std::clone::Clone
-        + AsBytes
-        + FromBytes
-        + PartialOrd;
+        + super::AsBytes
+        + super::FromBytes
+        + PartialOrd
+    {}
+
+    impl ParquetValueType for bool {}
+    impl ParquetValueType for i32 {}
+    impl ParquetValueType for i64 {}
+    impl ParquetValueType for super::Int96 {}
+    impl ParquetValueType for f32 {}
+    impl ParquetValueType for f64 {}
+    impl ParquetValueType for super::ByteArray {}
+}
+
+/// Contains the Parquet physical type information as well as the Rust primitive type
+/// presentation.
+pub trait DataType: 'static {
+    type T: private::ParquetValueType;
 
     /// Returns Parquet physical type.
     fn get_physical_type() -> Type;
