@@ -437,7 +437,23 @@ impl AsBytes for str {
     }
 }
 
-mod private {
+pub(crate) mod private {
+    use super::{AsBytes, Result, ParquetError};
+
+    pub type BitIndex = u64;
+
+    #[derive(Copy, Clone)]
+    pub enum EncodedValue<'a> {
+        /// The value can be encoded from the following bytes
+        Bytes {
+            data: &'a [u8]
+        },
+        /// The value encodes as a specific set bit at a given index
+        Bits{
+            index: BitIndex
+        },
+    }
+
     /// Sealed trait to start to remove specialisation from implementations
     ///
     /// This is done to force the associated value type to be unimplementable outside of this
@@ -451,15 +467,90 @@ mod private {
         + super::AsBytes
         + super::FromBytes
         + PartialOrd
-    {}
+    {
+        /// Return the most primitive version of encoding a given type
+        fn encoded(&self) -> EncodedValue<'_>;
 
-    impl ParquetValueType for bool {}
-    impl ParquetValueType for i32 {}
-    impl ParquetValueType for i64 {}
-    impl ParquetValueType for super::Int96 {}
-    impl ParquetValueType for f32 {}
-    impl ParquetValueType for f64 {}
-    impl ParquetValueType for super::ByteArray {}
+        /// Return the encoded size for a type
+        fn dict_encoding_size(&self) -> (usize, usize) {
+            (std::mem::size_of::<Self>(), 1)
+        }
+
+        /// Return the value as i64 if possible
+        ///
+        /// This is essentially the same as `std::convert::TryInto<i64>` but can
+        /// implemented for `f32` and `f64`, types that would fail orphan rules
+        fn as_i64(&self) -> Result<i64> {
+            Err(general_err!("Type cannot be converted to i64"))
+        }
+
+        /// Return the value as u64 if possible
+        ///
+        /// This is essentially the same as `std::convert::TryInto<u64>` but can
+        /// implemented for `f32` and `f64`, types that would fail orphan rules
+        fn as_u64(&self) -> Result<u64> {
+            self.as_i64()
+                .map_err(|_| general_err!("Type cannot be converted to u64"))
+                .map(|x| x as u64)
+        }
+    }
+
+    impl ParquetValueType for bool {
+        fn encoded(&self) -> EncodedValue<'_> {
+            EncodedValue::Bits { index: *self as u64 }
+        }
+
+        fn as_i64(&self) -> Result<i64> {
+            Ok(*self as i64)
+        }
+    }
+
+    /// Hopelessly unsafe function that emulates `num::as_ne_bytes`
+    ///
+    /// It is not recommended to use this outside of this private module as, while it
+    /// _should_ work for primitive values, it is little better than a transmutation
+    /// and can act as a backdoor into mis-interpreting types as arbitary byte slices
+    fn as_raw<'a, T>(value: *const T) -> &'a [u8] {
+        unsafe {
+            let value = value as *const u8;
+            std::slice::from_raw_parts(value, std::mem::size_of::<T>())
+        }
+    }
+
+    macro_rules! impl_from_raw {
+        ($ty: ty, $self: ident => $as_i64: block) => {
+            impl ParquetValueType for $ty {
+                fn encoded(&self) -> EncodedValue<'_> {
+                    EncodedValue::Bytes { data: as_raw(&*self) }
+                }
+
+                fn as_i64(&$self) -> Result<i64> {
+                    $as_i64
+                }
+            }
+        }
+    }
+
+    impl_from_raw!(i32, self => { Ok(*self as i64) });
+    impl_from_raw!(i64, self => { Ok(*self) });
+    impl_from_raw!(f32, self => { Err(general_err!("Type cannot be converted to i64")) });
+    impl_from_raw!(f64, self => { Err(general_err!("Type cannot be converted to i64")) });
+
+    impl ParquetValueType for super::Int96 {
+        fn encoded(&self) -> EncodedValue<'_> {
+            EncodedValue::Bytes { data: self.as_bytes() }
+        }
+    }
+
+    impl ParquetValueType for super::ByteArray {
+        fn encoded(&self) -> EncodedValue<'_> {
+            EncodedValue::Bytes { data: self.data() }
+        }
+
+        fn dict_encoding_size(&self) -> (usize, usize) {
+            (std::mem::size_of::<u32>(), self.len())
+        }
+    }
 }
 
 /// Contains the Parquet physical type information as well as the Rust primitive type

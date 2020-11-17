@@ -254,7 +254,7 @@ impl Decoder<BoolType> for PlainDecoder<BoolType> {
         Ok(())
     }
 
-    default fn get(&mut self, buffer: &mut [bool]) -> Result<usize> {
+    fn get(&mut self, buffer: &mut [bool]) -> Result<usize> {
         assert!(self.bit_reader.is_some());
 
         let bit_reader = self.bit_reader.as_mut().unwrap();
