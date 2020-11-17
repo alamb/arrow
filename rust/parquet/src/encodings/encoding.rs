@@ -1262,7 +1262,7 @@ mod tests {
         fn test_dict_internal(total: usize, type_length: i32) -> Result<()>;
     }
 
-    impl<T: DataType> EncodingTester<T> for T {
+    impl<T: DataType + RandGen<T>> EncodingTester<T> for T {
         fn test_internal(enc: Encoding, total: usize, type_length: i32) -> Result<()> {
             let mut encoder = create_test_encoder::<T>(type_length, enc);
             let mut decoder = create_test_decoder::<T>(type_length, enc);

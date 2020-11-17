@@ -36,12 +36,6 @@ pub trait RandGen<T: DataType> {
     }
 }
 
-impl<T: DataType> RandGen<T> for T {
-    default fn gen(_: i32) -> T::T {
-        panic!("Unsupported data type");
-    }
-}
-
 impl RandGen<BoolType> for BoolType {
     fn gen(_: i32) -> bool {
         thread_rng().gen::<bool>()
