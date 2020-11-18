@@ -340,7 +340,12 @@ pub trait AsBytes {
 pub trait SliceAsBytes: Sized {
     /// Returns slice of bytes for a slice of this data type.
     fn slice_as_bytes(self_: &[Self]) -> &[u8];
-    fn slice_as_bytes_mut(self_: &mut [Self]) -> &mut [u8];
+    /// Return the internal representation as a mutable slice
+    ///
+    /// # Safety
+    /// If modified you are _required_ to ensure the internal representation
+    /// is valid and correct for the actual raw data
+    unsafe fn slice_as_bytes_mut(self_: &mut [Self]) -> &mut [u8];
 }
 
 impl AsBytes for [u8] {
@@ -361,6 +366,7 @@ macro_rules! gen_as_bytes {
                 }
             }
         }
+
         impl SliceAsBytes for $source_ty {
             fn slice_as_bytes(self_: &[Self]) -> &[u8] {
                 unsafe {
@@ -370,13 +376,11 @@ macro_rules! gen_as_bytes {
                     )
                 }
             }
-            fn slice_as_bytes_mut(self_: &mut [Self]) -> &mut [u8] {
-                unsafe {
-                    std::slice::from_raw_parts_mut(
-                        self_.as_mut_ptr() as *mut u8,
-                        std::mem::size_of::<$source_ty>() * self_.len(),
-                    )
-                }
+            unsafe fn slice_as_bytes_mut(self_: &mut [Self]) -> &mut [u8] {
+                std::slice::from_raw_parts_mut(
+                    self_.as_mut_ptr() as *mut u8,
+                    std::mem::size_of::<$source_ty>() * self_.len(),
+                )
             }
         }
     };
@@ -392,6 +396,25 @@ gen_as_bytes!(u32);
 gen_as_bytes!(u64);
 gen_as_bytes!(f32);
 gen_as_bytes!(f64);
+
+macro_rules! unimplemented_slice_as_bytes {
+    ($ty: ty) => {
+        impl SliceAsBytes for $ty {
+            fn slice_as_bytes(_self: &[Self]) -> &[u8] {
+                unimplemented!()
+            }
+
+            unsafe fn slice_as_bytes_mut(_self: &mut [Self]) -> &mut [u8] {
+                unimplemented!()
+            }
+        }
+    }
+}
+
+// TODO - Can Int96 and bool be implemented in these terms?
+unimplemented_slice_as_bytes!(Int96);
+unimplemented_slice_as_bytes!(bool);
+unimplemented_slice_as_bytes!(ByteArray);
 
 impl AsBytes for bool {
     fn as_bytes(&self) -> &[u8] {
@@ -466,6 +489,7 @@ pub(crate) mod private {
         + std::clone::Clone
         + super::AsBytes
         + super::FromBytes
+        + super::SliceAsBytes
         + PartialOrd
     {
         /// Return the most primitive version of encoding a given type
@@ -752,6 +776,16 @@ impl FromBytes for ByteArray {
     }
     fn from_ne_bytes(bs: Self::Buffer) -> Self {
         ByteArray::from(bs.to_vec())
+    }
+}
+
+/// Macro to reduce repetition in making type assertions on the physical type against `T`
+macro_rules! ensure_phys_ty {
+    ($($ty: pat)|+ , $err: literal) => {
+        match T::get_physical_type() {
+            $($ty => (),)*
+            _ => panic!($err),
+        };
     }
 }
 

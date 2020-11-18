@@ -25,6 +25,7 @@ use byteorder::{ByteOrder, LittleEndian};
 
 use crate::basic::*;
 use crate::data_type::*;
+use crate::data_type::private::*;
 use crate::errors::{ParquetError, Result};
 use crate::schema::types::ColumnDescPtr;
 use crate::util::{
@@ -170,10 +171,19 @@ impl<T: DataType> PlainDecoder<T> {
 
 impl<T: DataType> Decoder<T> for PlainDecoder<T> {
     #[inline]
-    default fn set_data(&mut self, data: ByteBufferPtr, num_values: usize) -> Result<()> {
+    fn set_data(&mut self, data: ByteBufferPtr, num_values: usize) -> Result<()> {
         self.num_values = num_values;
-        self.start = 0;
-        self.data = Some(data);
+
+        match T::get_physical_type() {
+            Type::BOOLEAN => {
+                self.bit_reader = Some(BitReader::new(data))
+            }
+            _ => {
+                self.start = 0;
+                self.data = Some(data);
+            }
+        };
+
         Ok(())
     }
 
@@ -188,124 +198,113 @@ impl<T: DataType> Decoder<T> for PlainDecoder<T> {
     }
 
     #[inline]
-    default fn get(&mut self, _buffer: &mut [T::T]) -> Result<usize> {
-        unreachable!()
-    }
-}
-
-impl<T: SliceAsBytesDataType> Decoder<T> for PlainDecoder<T>
-where
-    T::T: SliceAsBytes,
-{
-    #[inline]
     fn get(&mut self, buffer: &mut [T::T]) -> Result<usize> {
-        assert!(self.data.is_some());
+        match T::get_physical_type() {
+            Type::BOOLEAN => {
+                assert!(self.bit_reader.is_some());
 
-        let data = self.data.as_mut().unwrap();
-        let num_values = cmp::min(buffer.len(), self.num_values);
-        let bytes_left = data.len() - self.start;
-        let bytes_to_decode = mem::size_of::<T::T>() * num_values;
-        if bytes_left < bytes_to_decode {
-            return Err(eof_err!("Not enough bytes to decode"));
-        }
-        let raw_buffer = &mut T::T::slice_as_bytes_mut(buffer)[..bytes_to_decode];
-        raw_buffer.copy_from_slice(data.range(self.start, bytes_to_decode).as_ref());
-        self.start += bytes_to_decode;
-        self.num_values -= num_values;
+                let bit_reader = self.bit_reader.as_mut().unwrap();
+                let num_values = cmp::min(buffer.len(), self.num_values);
+                let values_read = bit_reader.get_batch(&mut buffer[..num_values], 1);
+                self.num_values -= values_read;
 
-        Ok(num_values)
-    }
-}
+                Ok(values_read)
+            },
+            Type::FIXED_LEN_BYTE_ARRAY | Type::BYTE_ARRAY => {
+                assert!(self.data.is_some());
+                if T::get_physical_type() == Type::FIXED_LEN_BYTE_ARRAY {
+                    assert!(self.type_length > 0);
+                }
 
-impl Decoder<Int96Type> for PlainDecoder<Int96Type> {
-    fn get(&mut self, buffer: &mut [Int96]) -> Result<usize> {
-        assert!(self.data.is_some());
+                // TODO - The lack of specialisation forces this transmute, but it
+                // is obviously a bad practise.
+                // There might be a better way with safe_transmute or downcasting
+                let buffer = unsafe {
+                    std::mem::transmute::<&mut [T::T], &mut[ByteArray]>(buffer)
+                };
 
-        let data = self.data.as_ref().unwrap();
-        let num_values = cmp::min(buffer.len(), self.num_values);
-        let bytes_left = data.len() - self.start;
-        let bytes_to_decode = 12 * num_values;
-        if bytes_left < bytes_to_decode {
-            return Err(eof_err!("Not enough bytes to decode"));
-        }
+                let data = self.data.as_mut().unwrap();
+                let num_values = cmp::min(buffer.len(), self.num_values);
+                for i in 0..num_values {
+                    let len: usize = match T::get_physical_type() {
+                        Type::FIXED_LEN_BYTE_ARRAY => self.type_length as usize,
+                        Type::BYTE_ARRAY => {
+                            let len = read_num_bytes!(u32, 4, data.start_from(self.start).as_ref());
+                            self.start += mem::size_of::<u32>();
+                            len as usize
+                        },
+                        _ => unreachable!()
+                    };
 
-        let data_range = data.range(self.start, bytes_to_decode);
-        let bytes: &[u8] = data_range.data();
-        self.start += bytes_to_decode;
+                    if data.len() < self.start + len {
+                        return Err(eof_err!("Not enough bytes to decode"));
+                    }
 
-        let mut pos = 0; // position in byte array
-        for i in 0..num_values {
-            let elem0 = LittleEndian::read_u32(&bytes[pos..pos + 4]);
-            let elem1 = LittleEndian::read_u32(&bytes[pos + 4..pos + 8]);
-            let elem2 = LittleEndian::read_u32(&bytes[pos + 8..pos + 12]);
-            buffer[i].set_data(elem0, elem1, elem2);
-            pos += 12;
-        }
-        self.num_values -= num_values;
+                    buffer[i].set_data(data.range(self.start, len));
+                    self.start += len;
+                }
+                self.num_values -= num_values;
 
-        Ok(num_values)
-    }
-}
+                Ok(num_values)
+            },
+            Type::INT96 => {
+                // TODO - Remove the duplication between this and the general slice method
+                assert!(self.data.is_some());
 
-impl Decoder<BoolType> for PlainDecoder<BoolType> {
-    fn set_data(&mut self, data: ByteBufferPtr, num_values: usize) -> Result<()> {
-        self.num_values = num_values;
-        self.bit_reader = Some(BitReader::new(data));
-        Ok(())
-    }
+                let data = self.data.as_ref().unwrap();
+                let num_values = cmp::min(buffer.len(), self.num_values);
+                let bytes_left = data.len() - self.start;
+                let bytes_to_decode = 12 * num_values;
+                if bytes_left < bytes_to_decode {
+                    return Err(eof_err!("Not enough bytes to decode"));
+                }
 
-    fn get(&mut self, buffer: &mut [bool]) -> Result<usize> {
-        assert!(self.bit_reader.is_some());
+                let data_range = data.range(self.start, bytes_to_decode);
+                let bytes: &[u8] = data_range.data();
+                self.start += bytes_to_decode;
 
-        let bit_reader = self.bit_reader.as_mut().unwrap();
-        let num_values = cmp::min(buffer.len(), self.num_values);
-        let values_read = bit_reader.get_batch::<bool>(&mut buffer[..num_values], 1);
-        self.num_values -= values_read;
+                let mut pos = 0; // position in byte array
+                for i in 0..num_values {
+                    let elem0 = LittleEndian::read_u32(&bytes[pos..pos + 4]);
+                    let elem1 = LittleEndian::read_u32(&bytes[pos + 4..pos + 8]);
+                    let elem2 = LittleEndian::read_u32(&bytes[pos + 8..pos + 12]);
 
-        Ok(values_read)
-    }
-}
+                    // TODO - The lack of specialisation forces this transmute, but it
+                    // is obviously a bad practise.
+                    // There might be a better way with safe_transmute or downcasting
+                    let elem = unsafe {
+                        std::mem::transmute::<&mut T::T, &mut Int96>(&mut buffer[i])
+                    };
 
-impl Decoder<ByteArrayType> for PlainDecoder<ByteArrayType> {
-    fn get(&mut self, buffer: &mut [ByteArray]) -> Result<usize> {
-        assert!(self.data.is_some());
+                    elem.set_data(elem0, elem1, elem2);
+                    pos += 12;
+                }
+                self.num_values -= num_values;
 
-        let data = self.data.as_mut().unwrap();
-        let num_values = cmp::min(buffer.len(), self.num_values);
-        for i in 0..num_values {
-            let len: usize =
-                read_num_bytes!(u32, 4, data.start_from(self.start).as_ref()) as usize;
-            self.start += mem::size_of::<u32>();
-            if data.len() < self.start + len {
-                return Err(eof_err!("Not enough bytes to decode"));
+                Ok(num_values)
+            },
+            _ => {
+                assert!(self.data.is_some());
+
+                let data = self.data.as_mut().unwrap();
+                let num_values = cmp::min(buffer.len(), self.num_values);
+                let bytes_left = data.len() - self.start;
+                let bytes_to_decode = mem::size_of::<T::T>() * num_values;
+                if bytes_left < bytes_to_decode {
+                    return Err(eof_err!("Not enough bytes to decode"));
+                }
+
+                // SAFETY: Raw types should be as per the standard rust bit-vectors
+                unsafe {
+                    let raw_buffer = &mut T::T::slice_as_bytes_mut(buffer)[..bytes_to_decode];
+                    raw_buffer.copy_from_slice(data.range(self.start, bytes_to_decode).as_ref());
+                };
+                self.start += bytes_to_decode;
+                self.num_values -= num_values;
+
+                Ok(num_values)
             }
-            buffer[i].set_data(data.range(self.start, len));
-            self.start += len;
         }
-        self.num_values -= num_values;
-
-        Ok(num_values)
-    }
-}
-
-impl Decoder<FixedLenByteArrayType> for PlainDecoder<FixedLenByteArrayType> {
-    fn get(&mut self, buffer: &mut [ByteArray]) -> Result<usize> {
-        assert!(self.data.is_some());
-        assert!(self.type_length > 0);
-
-        let data = self.data.as_mut().unwrap();
-        let type_length = self.type_length as usize;
-        let num_values = cmp::min(buffer.len(), self.num_values);
-        for i in 0..num_values {
-            if data.len() < self.start + type_length {
-                return Err(eof_err!("Not enough bytes to decode"));
-            }
-            buffer[i].set_data(data.range(self.start, type_length));
-            self.start += type_length;
-        }
-        self.num_values -= num_values;
-
-        Ok(num_values)
     }
 }
 
@@ -423,12 +422,16 @@ impl<T: DataType> RleValueDecoder<T> {
 
 impl<T: DataType> Decoder<T> for RleValueDecoder<T> {
     #[inline]
-    default fn set_data(
+    fn set_data(
         &mut self,
-        _data: ByteBufferPtr,
-        _num_values: usize,
+        data: ByteBufferPtr,
+        num_values: usize,
     ) -> Result<()> {
-        panic!("RleValueDecoder only supports BoolType");
+        ensure_phys_ty!(Type::BOOLEAN, "RleValueDecoder only supports BoolType");
+
+        // Only support RLE value reader for boolean values with bit width of 1.
+        self.decoder = Some(RleDecoder::new(1));
+        self.set_data_internal(data, num_values)
     }
 
     #[inline]
@@ -451,15 +454,6 @@ impl<T: DataType> Decoder<T> for RleValueDecoder<T> {
         let values_read = rle_decoder.get_batch(&mut buffer[..num_values])?;
         self.values_left -= values_read;
         Ok(values_read)
-    }
-}
-
-impl Decoder<BoolType> for RleValueDecoder<BoolType> {
-    #[inline]
-    fn set_data(&mut self, data: ByteBufferPtr, num_values: usize) -> Result<()> {
-        // Only support RLE value reader for boolean values with bit width of 1.
-        self.decoder = Some(RleDecoder::new(1));
-        self.set_data_internal(data, num_values)
     }
 }
 
@@ -578,13 +572,10 @@ impl<T: DataType> DeltaBitPackDecoder<T> {
     }
 }
 
-impl<T: DataType> Decoder<T> for DeltaBitPackDecoder<T>
-where
-    T::T: FromBytes,
-{
+impl<T: DataType> Decoder<T> for DeltaBitPackDecoder<T> {
     // # of total values is derived from encoding
     #[inline]
-    default fn set_data(&mut self, data: ByteBufferPtr, _: usize) -> Result<()> {
+    fn set_data(&mut self, data: ByteBufferPtr, _index: usize) -> Result<()> {
         self.bit_reader = BitReader::new(data);
         self.initialized = true;
 
@@ -618,7 +609,7 @@ where
         Ok(())
     }
 
-    default fn get(&mut self, buffer: &mut [T::T]) -> Result<usize> {
+    fn get(&mut self, buffer: &mut [T::T]) -> Result<usize> {
         assert!(self.initialized, "Bit reader is not initialized");
 
         let num_values = cmp::min(buffer.len(), self.num_values);
@@ -679,37 +670,28 @@ trait DeltaBitPackDecoderConversion<T: DataType> {
 
 impl<T: DataType> DeltaBitPackDecoderConversion<T> for DeltaBitPackDecoder<T> {
     #[inline]
-    default fn get_delta(&self, _: usize) -> i64 {
-        panic!("DeltaBitPackDecoder only supports Int32Type and Int64Type")
-    }
-
-    #[inline]
-    default fn set_decoded_value(&self, _: &mut [T::T], _: usize, _: i64) {
-        panic!("DeltaBitPackDecoder only supports Int32Type and Int64Type")
-    }
-}
-
-impl DeltaBitPackDecoderConversion<Int32Type> for DeltaBitPackDecoder<Int32Type> {
-    #[inline]
     fn get_delta(&self, index: usize) -> i64 {
-        self.deltas_in_mini_block[index] as i64
+        ensure_phys_ty!(Type::INT32 | Type::INT64,
+            "DeltaBitPackDecoder only supports Int32Type and Int64Type");
+        self.deltas_in_mini_block[index].as_i64().unwrap()
     }
 
     #[inline]
-    fn set_decoded_value(&self, buffer: &mut [i32], index: usize, value: i64) {
-        buffer[index] = value as i32;
-    }
-}
-
-impl DeltaBitPackDecoderConversion<Int64Type> for DeltaBitPackDecoder<Int64Type> {
-    #[inline]
-    fn get_delta(&self, index: usize) -> i64 {
-        self.deltas_in_mini_block[index]
-    }
-
-    #[inline]
-    fn set_decoded_value(&self, buffer: &mut [i64], index: usize, value: i64) {
-        buffer[index] = value;
+    fn set_decoded_value(&self, buffer: &mut [T::T], index: usize, value: i64) {
+        // TODO - The lack of specialisation forces this transmute, but it
+        // is obviously a bad practise.
+        // There might be a better way with safe_transmute or downcasting
+        match T::get_physical_type() {
+            Type::INT32 => unsafe {
+                let buffer =std::mem::transmute::<&mut [T::T], &mut [i32]>(buffer);
+                buffer[index] = value as i32;
+            },
+            Type::INT64 => unsafe {
+                let buffer = std::mem::transmute::<&mut [T::T], &mut [i64]>(buffer);
+                buffer[index] = value;
+            },
+            _ => panic!("DeltaBitPackDecoder only supports Int32Type and Int64Type"),
+        };
     }
 }
 
@@ -757,16 +739,57 @@ impl<T: DataType> DeltaLengthByteArrayDecoder<T> {
 }
 
 impl<T: DataType> Decoder<T> for DeltaLengthByteArrayDecoder<T> {
-    default fn set_data(&mut self, _: ByteBufferPtr, _: usize) -> Result<()> {
-        Err(general_err!(
-            "DeltaLengthByteArrayDecoder only support ByteArrayType"
-        ))
+    fn set_data(&mut self, data: ByteBufferPtr, num_values: usize) -> Result<()> {
+        match T::get_physical_type() {
+            Type::BYTE_ARRAY => {
+                let mut len_decoder = DeltaBitPackDecoder::<Int32Type>::new();
+                len_decoder.set_data(data.all(), num_values)?;
+                let num_lengths = len_decoder.values_left();
+                self.lengths.resize(num_lengths, 0);
+                len_decoder.get(&mut self.lengths[..])?;
+
+                self.data = Some(data.start_from(len_decoder.get_offset()));
+                self.offset = 0;
+                self.current_idx = 0;
+                self.num_values = num_lengths;
+                Ok(())
+            },
+            _ => {
+                Err(general_err!(
+                    "DeltaLengthByteArrayDecoder only support ByteArrayType"))
+            }
+        }
     }
 
-    default fn get(&mut self, _: &mut [T::T]) -> Result<usize> {
-        Err(general_err!(
-            "DeltaLengthByteArrayDecoder only support ByteArrayType"
-        ))
+     fn get(&mut self, buffer: &mut [T::T]) -> Result<usize> {
+        match T::get_physical_type() {
+            Type::BYTE_ARRAY => {
+                assert!(self.data.is_some());
+
+                // TODO - The lack of specialisation forces this transmute, but it
+                // is obviously a bad practise.
+                // There might be a better way with safe_transmute or downcasting
+                let buffer = unsafe {
+                    std::mem::transmute::<&mut[T::T], &mut [ByteArray]>(buffer)
+                };
+
+                let data = self.data.as_ref().unwrap();
+                let num_values = cmp::min(buffer.len(), self.num_values);
+                for i in 0..num_values {
+                    let len = self.lengths[self.current_idx] as usize;
+                    buffer[i].set_data(data.range(self.offset, len));
+                    self.offset += len;
+                    self.current_idx += 1;
+                }
+
+                self.num_values -= num_values;
+                Ok(num_values)
+            },
+            _ => {
+                Err(general_err!(
+                    "DeltaLengthByteArrayDecoder only support ByteArrayType"))
+            }
+        }
     }
 
     fn values_left(&self) -> usize {
@@ -775,38 +798,6 @@ impl<T: DataType> Decoder<T> for DeltaLengthByteArrayDecoder<T> {
 
     fn encoding(&self) -> Encoding {
         Encoding::DELTA_LENGTH_BYTE_ARRAY
-    }
-}
-
-impl Decoder<ByteArrayType> for DeltaLengthByteArrayDecoder<ByteArrayType> {
-    fn set_data(&mut self, data: ByteBufferPtr, num_values: usize) -> Result<()> {
-        let mut len_decoder = DeltaBitPackDecoder::<Int32Type>::new();
-        len_decoder.set_data(data.all(), num_values)?;
-        let num_lengths = len_decoder.values_left();
-        self.lengths.resize(num_lengths, 0);
-        len_decoder.get(&mut self.lengths[..])?;
-
-        self.data = Some(data.start_from(len_decoder.get_offset()));
-        self.offset = 0;
-        self.current_idx = 0;
-        self.num_values = num_lengths;
-        Ok(())
-    }
-
-    fn get(&mut self, buffer: &mut [ByteArray]) -> Result<usize> {
-        assert!(self.data.is_some());
-
-        let data = self.data.as_ref().unwrap();
-        let num_values = cmp::min(buffer.len(), self.num_values);
-        for i in 0..num_values {
-            let len = self.lengths[self.current_idx] as usize;
-            buffer[i].set_data(data.range(self.offset, len));
-            self.offset += len;
-            self.current_idx += 1;
-        }
-
-        self.num_values -= num_values;
-        Ok(num_values)
     }
 }
 
@@ -855,16 +846,77 @@ impl<T: DataType> DeltaByteArrayDecoder<T> {
 }
 
 impl<'m, T: DataType> Decoder<T> for DeltaByteArrayDecoder<T> {
-    default fn set_data(&mut self, _: ByteBufferPtr, _: usize) -> Result<()> {
-        Err(general_err!(
-            "DeltaByteArrayDecoder only supports ByteArrayType and FixedLenByteArrayType"
-        ))
+    fn set_data(&mut self, data: ByteBufferPtr, num_values: usize) -> Result<()> {
+        match T::get_physical_type() {
+            Type::BYTE_ARRAY | Type::FIXED_LEN_BYTE_ARRAY => {
+                let mut prefix_len_decoder = DeltaBitPackDecoder::<Int32Type>::new();
+                prefix_len_decoder.set_data(data.all(), num_values)?;
+                let num_prefixes = prefix_len_decoder.values_left();
+                self.prefix_lengths.resize(num_prefixes, 0);
+                prefix_len_decoder.get(&mut self.prefix_lengths[..])?;
+
+                let mut suffix_decoder = DeltaLengthByteArrayDecoder::new();
+                suffix_decoder
+                    .set_data(data.start_from(prefix_len_decoder.get_offset()), num_values)?;
+                self.suffix_decoder = Some(suffix_decoder);
+                self.num_values = num_prefixes;
+                self.current_idx = 0;
+                self.previous_value.clear();
+                Ok(())
+            }
+            _ => {
+                Err(general_err!(
+                    "DeltaByteArrayDecoder only supports ByteArrayType and FixedLenByteArrayType"
+                ))
+            }
+        }
     }
 
-    default fn get(&mut self, _: &mut [T::T]) -> Result<usize> {
-        Err(general_err!(
-            "DeltaByteArrayDecoder only supports ByteArrayType and FixedLenByteArrayType"
-        ))
+    fn get(&mut self, buffer: &mut [T::T]) -> Result<usize> {
+        match T::get_physical_type() {
+            Type::BYTE_ARRAY | Type::FIXED_LEN_BYTE_ARRAY => {
+                assert!(self.suffix_decoder.is_some());
+
+                let num_values = cmp::min(buffer.len(), self.num_values);
+                let mut v: [ByteArray; 1] = [ByteArray::new(); 1];
+                for i in 0..num_values {
+                    // Process suffix
+                    // TODO: this is awkward - maybe we should add a non-vectorized API?
+                    let suffix_decoder = self.suffix_decoder.as_mut().unwrap();
+                    suffix_decoder.get(&mut v[..])?;
+                    let suffix = v[0].data();
+
+                    // Extract current prefix length, can be 0
+                    let prefix_len = self.prefix_lengths[self.current_idx] as usize;
+
+                    // Concatenate prefix with suffix
+                    let mut result = Vec::new();
+                    result.extend_from_slice(&self.previous_value[0..prefix_len]);
+                    result.extend_from_slice(suffix);
+
+                    let data = ByteBufferPtr::new(result.clone());
+
+                    // TODO - The lack of specialisation forces this transmute, but it
+                    // is obviously a bad practise.
+                    // There might be a better way with safe_transmute or downcasting
+                    let buffer = unsafe {
+                        std::mem::transmute::<&mut [T::T], &mut [ByteArray]>(buffer)
+                    };
+
+                    buffer[i].set_data(data);
+                    self.previous_value = result;
+                    self.current_idx += 1;
+                }
+
+                self.num_values -= num_values;
+                Ok(num_values)
+            }
+            _ => {
+                Err(general_err!(
+                    "DeltaByteArrayDecoder only supports ByteArrayType and FixedLenByteArrayType"
+                ))
+            }
+        }
     }
 
     fn values_left(&self) -> usize {
@@ -873,69 +925,6 @@ impl<'m, T: DataType> Decoder<T> for DeltaByteArrayDecoder<T> {
 
     fn encoding(&self) -> Encoding {
         Encoding::DELTA_BYTE_ARRAY
-    }
-}
-
-impl Decoder<ByteArrayType> for DeltaByteArrayDecoder<ByteArrayType> {
-    fn set_data(&mut self, data: ByteBufferPtr, num_values: usize) -> Result<()> {
-        let mut prefix_len_decoder = DeltaBitPackDecoder::<Int32Type>::new();
-        prefix_len_decoder.set_data(data.all(), num_values)?;
-        let num_prefixes = prefix_len_decoder.values_left();
-        self.prefix_lengths.resize(num_prefixes, 0);
-        prefix_len_decoder.get(&mut self.prefix_lengths[..])?;
-
-        let mut suffix_decoder = DeltaLengthByteArrayDecoder::new();
-        suffix_decoder
-            .set_data(data.start_from(prefix_len_decoder.get_offset()), num_values)?;
-        self.suffix_decoder = Some(suffix_decoder);
-        self.num_values = num_prefixes;
-        self.current_idx = 0;
-        self.previous_value.clear();
-        Ok(())
-    }
-
-    fn get(&mut self, buffer: &mut [ByteArray]) -> Result<usize> {
-        assert!(self.suffix_decoder.is_some());
-
-        let num_values = cmp::min(buffer.len(), self.num_values);
-        let mut v: [ByteArray; 1] = [ByteArray::new(); 1];
-        for i in 0..num_values {
-            // Process suffix
-            // TODO: this is awkward - maybe we should add a non-vectorized API?
-            let suffix_decoder = self.suffix_decoder.as_mut().unwrap();
-            suffix_decoder.get(&mut v[..])?;
-            let suffix = v[0].data();
-
-            // Extract current prefix length, can be 0
-            let prefix_len = self.prefix_lengths[self.current_idx] as usize;
-
-            // Concatenate prefix with suffix
-            let mut result = Vec::new();
-            result.extend_from_slice(&self.previous_value[0..prefix_len]);
-            result.extend_from_slice(suffix);
-
-            let data = ByteBufferPtr::new(result.clone());
-            buffer[i].set_data(data);
-            self.previous_value = result;
-            self.current_idx += 1;
-        }
-
-        self.num_values -= num_values;
-        Ok(num_values)
-    }
-}
-
-impl Decoder<FixedLenByteArrayType> for DeltaByteArrayDecoder<FixedLenByteArrayType> {
-    fn set_data(&mut self, data: ByteBufferPtr, num_values: usize) -> Result<()> {
-        let s: &mut DeltaByteArrayDecoder<ByteArrayType> =
-            unsafe { mem::transmute(self) };
-        s.set_data(data, num_values)
-    }
-
-    fn get(&mut self, buffer: &mut [ByteArray]) -> Result<usize> {
-        let s: &mut DeltaByteArrayDecoder<ByteArrayType> =
-            unsafe { mem::transmute(self) };
-        s.get(buffer)
     }
 }
 
@@ -1460,15 +1449,20 @@ mod tests {
         fn to_byte_array(data: &[T::T]) -> Vec<u8>;
     }
 
-    impl<T> ToByteArray<T> for T
-    where
-        T: SliceAsBytesDataType,
-        <T as DataType>::T: SliceAsBytes,
-    {
-        default fn to_byte_array(data: &[T::T]) -> Vec<u8> {
-            <T as DataType>::T::slice_as_bytes(data).to_vec()
+    macro_rules! to_byte_array_impl {
+        ($ty: ty) => {
+            impl ToByteArray<$ty> for $ty {
+                fn to_byte_array(data: &[<$ty as DataType>::T]) -> Vec<u8> {
+                    <$ty as DataType>::T::slice_as_bytes(data).to_vec()
+                }
+            }
         }
     }
+
+    to_byte_array_impl!(Int32Type);
+    to_byte_array_impl!(Int64Type);
+    to_byte_array_impl!(FloatType);
+    to_byte_array_impl!(DoubleType);
 
     impl ToByteArray<BoolType> for BoolType {
         fn to_byte_array(data: &[bool]) -> Vec<u8> {

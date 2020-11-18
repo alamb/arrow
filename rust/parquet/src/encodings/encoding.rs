@@ -94,16 +94,6 @@ pub fn get_encoder<T: DataType>(
     Ok(encoder)
 }
 
-/// Macro to reduce repetition in making type assertions on the physical type against `T`
-macro_rules! ensure_phys_ty {
-    ($($ty: pat)|+ , $err: literal) => {
-        match T::get_physical_type() {
-            $($ty => (),)*
-            _ => panic!($err),
-        };
-    }
-}
-
 // ----------------------------------------------------------------------
 // Plain encoding
 
