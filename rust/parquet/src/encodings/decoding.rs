@@ -216,13 +216,6 @@ impl<T: DataType> Decoder<T> for PlainDecoder<T> {
                     assert!(self.type_length > 0);
                 }
 
-                // TODO - The lack of specialisation forces this transmute, but it
-                // is obviously a bad practise.
-                // There might be a better way with safe_transmute or downcasting
-                let buffer = unsafe {
-                    std::mem::transmute::<&mut [T::T], &mut[ByteArray]>(buffer)
-                };
-
                 let data = self.data.as_mut().unwrap();
                 let num_values = cmp::min(buffer.len(), self.num_values);
                 for i in 0..num_values {
@@ -240,7 +233,12 @@ impl<T: DataType> Decoder<T> for PlainDecoder<T> {
                         return Err(eof_err!("Not enough bytes to decode"));
                     }
 
-                    buffer[i].set_data(data.range(self.start, len));
+                    let val: &mut ByteArray = buffer[i]
+                        .as_mut_any()
+                        .downcast_mut()
+                        .unwrap();
+
+                    val.set_data(data.range(self.start, len));
                     self.start += len;
                 }
                 self.num_values -= num_values;
@@ -269,14 +267,12 @@ impl<T: DataType> Decoder<T> for PlainDecoder<T> {
                     let elem1 = LittleEndian::read_u32(&bytes[pos + 4..pos + 8]);
                     let elem2 = LittleEndian::read_u32(&bytes[pos + 8..pos + 12]);
 
-                    // TODO - The lack of specialisation forces this transmute, but it
-                    // is obviously a bad practise.
-                    // There might be a better way with safe_transmute or downcasting
-                    let elem = unsafe {
-                        std::mem::transmute::<&mut T::T, &mut Int96>(&mut buffer[i])
-                    };
+                    buffer[i]
+                        .as_mut_any()
+                        .downcast_mut::<Int96>()
+                        .unwrap()
+                        .set_data(elem0, elem1, elem2);
 
-                    elem.set_data(elem0, elem1, elem2);
                     pos += 12;
                 }
                 self.num_values -= num_values;
@@ -678,17 +674,22 @@ impl<T: DataType> DeltaBitPackDecoderConversion<T> for DeltaBitPackDecoder<T> {
 
     #[inline]
     fn set_decoded_value(&self, buffer: &mut [T::T], index: usize, value: i64) {
-        // TODO - The lack of specialisation forces this transmute, but it
-        // is obviously a bad practise.
-        // There might be a better way with safe_transmute or downcasting
         match T::get_physical_type() {
-            Type::INT32 => unsafe {
-                let buffer =std::mem::transmute::<&mut [T::T], &mut [i32]>(buffer);
-                buffer[index] = value as i32;
+            Type::INT32 => {
+                let val = buffer[index]
+                    .as_mut_any()
+                    .downcast_mut::<i32>()
+                    .unwrap();
+
+                *val = value as i32;
             },
-            Type::INT64 => unsafe {
-                let buffer = std::mem::transmute::<&mut [T::T], &mut [i64]>(buffer);
-                buffer[index] = value;
+            Type::INT64 => {
+                let val = buffer[index]
+                    .as_mut_any()
+                    .downcast_mut::<i64>()
+                    .unwrap();
+
+                *val = value;
             },
             _ => panic!("DeltaBitPackDecoder only supports Int32Type and Int64Type"),
         };
@@ -766,18 +767,17 @@ impl<T: DataType> Decoder<T> for DeltaLengthByteArrayDecoder<T> {
             Type::BYTE_ARRAY => {
                 assert!(self.data.is_some());
 
-                // TODO - The lack of specialisation forces this transmute, but it
-                // is obviously a bad practise.
-                // There might be a better way with safe_transmute or downcasting
-                let buffer = unsafe {
-                    std::mem::transmute::<&mut[T::T], &mut [ByteArray]>(buffer)
-                };
-
                 let data = self.data.as_ref().unwrap();
                 let num_values = cmp::min(buffer.len(), self.num_values);
                 for i in 0..num_values {
                     let len = self.lengths[self.current_idx] as usize;
-                    buffer[i].set_data(data.range(self.offset, len));
+
+                    buffer[i]
+                        .as_mut_any()
+                        .downcast_mut::<ByteArray>()
+                        .unwrap()
+                        .set_data(data.range(self.offset, len));
+
                     self.offset += len;
                     self.current_idx += 1;
                 }
@@ -896,14 +896,12 @@ impl<'m, T: DataType> Decoder<T> for DeltaByteArrayDecoder<T> {
 
                     let data = ByteBufferPtr::new(result.clone());
 
-                    // TODO - The lack of specialisation forces this transmute, but it
-                    // is obviously a bad practise.
-                    // There might be a better way with safe_transmute or downcasting
-                    let buffer = unsafe {
-                        std::mem::transmute::<&mut [T::T], &mut [ByteArray]>(buffer)
-                    };
+                    buffer[i]
+                        .as_mut_any()
+                        .downcast_mut::<ByteArray>()
+                        .unwrap()
+                        .set_data(data);
 
-                    buffer[i].set_data(data);
                     self.previous_value = result;
                     self.current_idx += 1;
                 }

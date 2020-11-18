@@ -517,6 +517,12 @@ pub(crate) mod private {
                 .map_err(|_| general_err!("Type cannot be converted to u64"))
                 .map(|x| x as u64)
         }
+
+        /// Return the value as an Any to allow for downcasts without transmutation
+        fn as_any(&self) -> &dyn std::any::Any;
+
+        /// Return the value as an mutable Any to allow for downcasts without transmutation
+        fn as_mut_any(&mut self) -> &mut dyn std::any::Any;
     }
 
     impl ParquetValueType for bool {
@@ -526,6 +532,14 @@ pub(crate) mod private {
 
         fn as_i64(&self) -> Result<i64> {
             Ok(*self as i64)
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_mut_any(&mut self) -> &mut dyn std::any::Any {
+            self
         }
     }
 
@@ -551,6 +565,14 @@ pub(crate) mod private {
                 fn as_i64(&$self) -> Result<i64> {
                     $as_i64
                 }
+
+                fn as_any(&self) -> &dyn std::any::Any {
+                    self
+                }
+
+                fn as_mut_any(&mut self) -> &mut dyn std::any::Any {
+                    self
+                }
             }
         }
     }
@@ -564,6 +586,14 @@ pub(crate) mod private {
         fn encoded(&self) -> EncodedValue<'_> {
             EncodedValue::Bytes { data: self.as_bytes() }
         }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_mut_any(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
     }
 
     impl ParquetValueType for super::ByteArray {
@@ -573,6 +603,14 @@ pub(crate) mod private {
 
         fn dict_encoding_size(&self) -> (usize, usize) {
             (std::mem::size_of::<u32>(), self.len())
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_mut_any(&mut self) -> &mut dyn std::any::Any {
+            self
         }
     }
 }
