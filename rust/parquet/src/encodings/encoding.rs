@@ -765,19 +765,15 @@ impl<T: DataType> Encoder<T> for DeltaLengthByteArrayEncoder<T> {
             "DeltaLengthByteArrayEncoder only supports ByteArrayType"
         );
 
-        // TODO - The lack of specialisation forces this transmute, but it
-        // is obviously a bad practise.
-        // There might be a better way with safe_transmute or downcasting
-        let values = unsafe {
-            std::mem::transmute::<&[T::T], &[ByteArray]>(values)
-        };
-
-        let lengths: Vec<i32> = values
+        let val_it = || values
             .iter()
+            .map(|x| x.as_any().downcast_ref::<ByteArray>().unwrap());
+
+        let lengths: Vec<i32> = val_it()
             .map(|byte_array| byte_array.len() as i32)
             .collect();
         self.len_encoder.put(&lengths)?;
-        for byte_array in values {
+        for byte_array in val_it() {
             self.encoded_size += byte_array.len();
             self.data.push(byte_array.clone());
         }
@@ -818,7 +814,7 @@ impl<T: DataType> Encoder<T> for DeltaLengthByteArrayEncoder<T> {
 /// encoding, followed by suffixes with DELTA_LENGTH_BYTE_ARRAY encoding.
 pub struct DeltaByteArrayEncoder<T: DataType> {
     prefix_len_encoder: DeltaBitPackEncoder<Int32Type>,
-    suffix_writer: DeltaLengthByteArrayEncoder<T>,
+    suffix_writer: DeltaLengthByteArrayEncoder<ByteArrayType>,
     previous: Vec<u8>,
     _phantom: PhantomData<T>,
 }
@@ -827,8 +823,8 @@ impl<T: DataType> DeltaByteArrayEncoder<T> {
     /// Creates new delta byte array encoder.
     pub fn new() -> Self {
         Self {
-            prefix_len_encoder: DeltaBitPackEncoder::<Int32Type>::new(),
-            suffix_writer: DeltaLengthByteArrayEncoder::<T>::new(),
+            prefix_len_encoder: DeltaBitPackEncoder::new(),
+            suffix_writer: DeltaLengthByteArrayEncoder::new(),
             previous: vec![],
             _phantom: PhantomData,
         }
@@ -842,12 +838,8 @@ impl<T: DataType> Encoder<T> for DeltaByteArrayEncoder<T> {
                 let mut prefix_lengths: Vec<i32> = vec![];
                 let mut suffixes: Vec<ByteArray> = vec![];
 
-                // TODO - The lack of specialisation forces this transmute, but it
-                // is obviously a bad practise.
-                // There might be a better way with safe_transmute or downcasting
-                let values = unsafe {
-                    std::mem::transmute::<&[T::T], &[ByteArray]>(values)
-                };
+                let values = values.iter()
+                    .map(|x| x.as_any().downcast_ref::<ByteArray>().unwrap());
 
                 for byte_array in values {
                     let current = byte_array.data();
@@ -866,14 +858,6 @@ impl<T: DataType> Encoder<T> for DeltaByteArrayEncoder<T> {
                     self.previous.extend_from_slice(current);
                 }
                 self.prefix_len_encoder.put(&prefix_lengths)?;
-
-                // TODO - The lack of specialisation forces this transmute, but it
-                // is obviously a bad practise.
-                // There might be a better way with safe_transmute or downcasting
-                let suffixes = unsafe {
-                    std::mem::transmute::<Vec<ByteArray>, Vec<T::T>>(suffixes)
-                };
-
                 self.suffix_writer.put(&suffixes)?;
             },
             _ => panic!(
