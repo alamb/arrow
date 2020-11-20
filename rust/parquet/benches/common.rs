@@ -45,6 +45,74 @@ gen_random_ints!(gen_10, 10);
 gen_random_ints!(gen_100, 100);
 gen_random_ints!(gen_1000, 1000);
 
+pub trait GenRandomValueType<T: DataType> {
+    fn gen() -> T::T where T::T: Sized;
+
+    fn gen_values(total: usize) -> (usize, Vec<T::T>) {
+        let mut vals = Vec::with_capacity(total);
+        for _ in 0..total {
+            vals.push(Self::gen())
+        }
+        let bytes = vals.len() * ::std::mem::size_of::<T::T>();
+        (bytes, vals)
+    }
+}
+
+macro_rules! impl_basic_gen {
+    ($ty: ty, $val_ty: ty) => {
+        impl GenRandomValueType<$ty> for $ty {
+            fn gen() -> $val_ty {
+                thread_rng().gen()
+            }
+        }
+    }
+}
+
+impl_basic_gen!(BoolType, bool);
+impl_basic_gen!(Int32Type, i32);
+impl_basic_gen!(Int64Type, i64);
+impl_basic_gen!(FloatType, f32);
+impl_basic_gen!(DoubleType, f64);
+
+impl GenRandomValueType<Int96Type> for Int96Type {
+    fn gen() -> Int96 {
+        let mut rng = thread_rng();
+        let mut val = Int96::new();
+        val.set_data(rng.gen(), rng.gen(), rng.gen());
+        val
+    }
+}
+
+impl GenRandomValueType<ByteArrayType> for ByteArrayType {
+    fn gen() -> ByteArray {
+        let mut rng = thread_rng();
+        // Make anything up to 16mb of data
+        let size = rng.gen_range(0, 2usize.pow(24) - 1);
+        let mut to_ret = Vec::with_capacity(size);
+
+        for _ in 0..to_ret.len() {
+            to_ret.push(rng.gen());
+        }
+
+        ByteArray::from(to_ret)
+    }
+}
+
+impl GenRandomValueType<FixedLenByteArrayType> for ByteArray {
+    fn gen() -> ByteArray {
+        let mut rng = thread_rng();
+        // Fixed size of 2000
+        const SIZE: usize = 2000;
+        let mut to_ret = Vec::with_capacity(SIZE);
+
+        for _ in 0..to_ret.len() {
+            to_ret.push(rng.gen());
+        }
+
+        ByteArray::from(to_ret)
+    }
+}
+
 pub fn gen_test_strs(total: usize) -> (usize, Vec<ByteArray>) {
     let mut words = Vec::new();
     words.push("aaaaaaaaaa");
