@@ -179,8 +179,8 @@ pub fn from_thrift(
                     old_format,
                 ),
                 Type::FIXED_LEN_BYTE_ARRAY => Statistics::fixed_len_byte_array(
-                    min.map(ByteArray::from),
-                    max.map(ByteArray::from),
+                    min.map(ByteArray::from).map(FixedLenByteArray::from),
+                    max.map(ByteArray::from).map(FixedLenByteArray::from),
                     distinct_count,
                     null_count,
                     old_format,
@@ -259,7 +259,7 @@ impl Statistics {
 
     statistics_new_func![byte_array, Option<ByteArray>, ByteArray];
 
-    statistics_new_func![fixed_len_byte_array, Option<ByteArray>, FixedLenByteArray];
+    statistics_new_func![fixed_len_byte_array, Option<FixedLenByteArray>, FixedLenByteArray];
 
     /// Returns `true` if statistics have old `min` and `max` fields set.
     /// This means that the column order is likely to be undefined, which, for old files
@@ -597,8 +597,8 @@ mod tests {
                 0,
                 true
             ) != Statistics::fixed_len_byte_array(
-                Some(ByteArray::from(vec![1, 2, 3])),
-                Some(ByteArray::from(vec![1, 2, 3])),
+                Some(ByteArray::from(vec![1, 2, 3]).into()),
+                Some(ByteArray::from(vec![1, 2, 3]).into()),
                 None,
                 0,
                 true
@@ -648,8 +648,8 @@ mod tests {
         check_stats(Statistics::byte_array(None, None, None, 7, true));
 
         check_stats(Statistics::fixed_len_byte_array(
-            Some(ByteArray::from(vec![1, 2, 3])),
-            Some(ByteArray::from(vec![3, 4, 5])),
+            Some(ByteArray::from(vec![1, 2, 3]).into()),
+            Some(ByteArray::from(vec![3, 4, 5]).into()),
             None,
             7,
             true,

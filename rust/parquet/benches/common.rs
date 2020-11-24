@@ -99,7 +99,7 @@ impl GenRandomValueType<ByteArrayType> for ByteArrayType {
 }
 
 impl GenRandomValueType<FixedLenByteArrayType> for ByteArray {
-    fn gen() -> ByteArray {
+    fn gen() -> FixedLenByteArray {
         let mut rng = thread_rng();
         // Fixed size of 2000
         const SIZE: usize = 2000;
@@ -109,7 +109,7 @@ impl GenRandomValueType<FixedLenByteArrayType> for ByteArray {
             to_ret.push(rng.gen());
         }
 
-        ByteArray::from(to_ret)
+        ByteArray::from(to_ret).into()
     }
 }
 

@@ -1356,28 +1356,28 @@ mod tests {
         check_encoding_write_support::<FixedLenByteArrayType>(
             WriterVersion::PARQUET_1_0,
             true,
-            &[ByteArray::from(vec![1u8])],
+            &[ByteArray::from(vec![1u8]).into()],
             None,
             &[Encoding::PLAIN, Encoding::RLE],
         );
         check_encoding_write_support::<FixedLenByteArrayType>(
             WriterVersion::PARQUET_1_0,
             false,
-            &[ByteArray::from(vec![1u8])],
+            &[ByteArray::from(vec![1u8]).into()],
             None,
             &[Encoding::PLAIN, Encoding::RLE],
         );
         check_encoding_write_support::<FixedLenByteArrayType>(
             WriterVersion::PARQUET_2_0,
             true,
-            &[ByteArray::from(vec![1u8])],
+            &[ByteArray::from(vec![1u8]).into()],
             Some(0),
             &[Encoding::PLAIN, Encoding::RLE_DICTIONARY, Encoding::RLE],
         );
         check_encoding_write_support::<FixedLenByteArrayType>(
             WriterVersion::PARQUET_2_0,
             false,
-            &[ByteArray::from(vec![1u8])],
+            &[ByteArray::from(vec![1u8]).into()],
             None,
             &[Encoding::DELTA_BYTE_ARRAY, Encoding::RLE],
         );

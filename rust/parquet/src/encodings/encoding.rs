@@ -17,11 +17,11 @@
 
 //! Contains all supported encoders for Parquet.
 
-use std::{cmp, convert::TryInto, io::Write, marker::PhantomData, mem};
+use std::{cmp, io::Write, marker::PhantomData, mem};
 
 use crate::basic::*;
 use crate::data_type::*;
-use crate::data_type::private::{ParquetValueType, EncodedValue};
+use crate::data_type::private::ParquetValueType;
 use crate::encodings::rle::RleEncoder;
 use crate::errors::{ParquetError, Result};
 use crate::schema::types::ColumnDescPtr;
@@ -130,6 +130,7 @@ impl<T: DataType> PlainEncoder<T> {
 }
 
 impl<T: DataType> Encoder<T> for PlainEncoder<T> {
+    #[cold]
     fn encoding(&self) -> Encoding {
         Encoding::PLAIN
     }
@@ -147,20 +148,9 @@ impl<T: DataType> Encoder<T> for PlainEncoder<T> {
         Ok(self.buffer.consume())
     }
 
+    #[inline]
     fn put(&mut self, values: &[T::T]) -> Result<()> {
-        for value in values {
-            match value.encoded() {
-                EncodedValue::Bits { index } => { self.bit_writer.put_value(index, 1); },
-                EncodedValue::Bytes { data } => {
-                    if T::get_physical_type() == Type::BYTE_ARRAY {
-                        let len: u32 = data.len().try_into().unwrap();
-                        self.buffer.write_all(&len.to_le_bytes())?;
-                    }
-                    self.buffer.write_all(data)?;
-                },
-            };
-        }
-
+        T::T::encode(values, &mut self.buffer, &mut self.bit_writer)?;
         Ok(())
     }
 }
@@ -257,7 +247,6 @@ impl<T: DataType> DictEncoder<T> {
 
     /// Writes out the dictionary values with RLE encoding in a byte buffer, and return
     /// the result.
-    #[inline]
     pub fn write_indices(&mut self) -> Result<ByteBufferPtr> {
         // TODO: the caller should allocate the buffer
         let buffer_len = self.estimated_data_encoded_size();
@@ -332,7 +321,6 @@ impl<T: DataType> DictEncoder<T> {
         }
     }
 
-    #[inline]
     fn double_table_size(&mut self) {
         let new_size = self.hash_table_size * 2;
         let mut new_hash_slots = Buffer::new().with_mem_tracker(self.mem_tracker.clone());
@@ -371,7 +359,7 @@ impl<T: DataType> Encoder<T> for DictEncoder<T> {
         Ok(())
     }
 
-    #[inline]
+    #[cold]
     fn encoding(&self) -> Encoding {
         Encoding::PLAIN_DICTIONARY
     }
@@ -431,6 +419,7 @@ impl<T: DataType> Encoder<T> for RleValueEncoder<T> {
         Ok(())
     }
 
+    #[cold]
     fn encoding(&self) -> Encoding {
         Encoding::RLE
     }
@@ -446,12 +435,7 @@ impl<T: DataType> Encoder<T> for RleValueEncoder<T> {
     #[inline]
     fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
         ensure_phys_ty!(Type::BOOLEAN, "RleValueEncoder only supports BoolType");
-
-        assert!(
-            self.encoder.is_some(),
-            "RLE value encoder is not initialized"
-        );
-        let rle_encoder = self.encoder.as_mut().unwrap();
+        let rle_encoder = self.encoder.as_mut().expect("RLE value encoder is not initialized");
 
         // Flush all encoder buffers and raw values
         let encoded_data = {
@@ -561,6 +545,7 @@ impl<T: DataType> DeltaBitPackEncoder<T> {
     }
 
     // Write current delta buffer (<= 'block size' values) into bit writer
+    #[inline(never)]
     fn flush_block_values(&mut self) -> Result<()> {
         if self.values_in_block == 0 {
             return Ok(());
@@ -653,6 +638,7 @@ impl<T: DataType> Encoder<T> for DeltaBitPackEncoder<T> {
         Ok(())
     }
 
+    #[cold]
     fn encoding(&self) -> Encoding {
         Encoding::DELTA_BINARY_PACKED
     }
@@ -781,6 +767,7 @@ impl<T: DataType> Encoder<T> for DeltaLengthByteArrayEncoder<T> {
         Ok(())
     }
 
+    #[cold]
     fn encoding(&self) -> Encoding {
         Encoding::DELTA_LENGTH_BYTE_ARRAY
     }
@@ -833,41 +820,42 @@ impl<T: DataType> DeltaByteArrayEncoder<T> {
 
 impl<T: DataType> Encoder<T> for DeltaByteArrayEncoder<T> {
     fn put(&mut self, values: &[T::T]) -> Result<()> {
-        match T::get_physical_type() {
-            Type::BYTE_ARRAY | Type::FIXED_LEN_BYTE_ARRAY => {
-                let mut prefix_lengths: Vec<i32> = vec![];
-                let mut suffixes: Vec<ByteArray> = vec![];
+        let mut prefix_lengths: Vec<i32> = vec![];
+        let mut suffixes: Vec<ByteArray> = vec![];
 
-                let values = values.iter()
-                    .map(|x| x.as_any().downcast_ref::<ByteArray>().unwrap());
+        let values = values.iter()
+            .map(|x| x.as_any())
+            .map(|x| match T::get_physical_type() {
+                Type::BYTE_ARRAY => x.downcast_ref::<ByteArray>().unwrap(),
+                Type::FIXED_LEN_BYTE_ARRAY => x.downcast_ref::<FixedLenByteArray>().unwrap(),
+                _ => panic!(
+                    "DeltaByteArrayEncoder only supports ByteArrayType and FixedLenByteArrayType"
+                )
+            });
 
-                for byte_array in values {
-                    let current = byte_array.data();
-                    // Maximum prefix length that is shared between previous value and current
-                    // value
-                    let prefix_len = cmp::min(self.previous.len(), current.len());
-                    let mut match_len = 0;
-                    while match_len < prefix_len && self.previous[match_len] == current[match_len]
-                    {
-                        match_len += 1;
-                    }
-                    prefix_lengths.push(match_len as i32);
-                    suffixes.push(byte_array.slice(match_len, byte_array.len() - match_len));
-                    // Update previous for the next prefix
-                    self.previous.clear();
-                    self.previous.extend_from_slice(current);
-                }
-                self.prefix_len_encoder.put(&prefix_lengths)?;
-                self.suffix_writer.put(&suffixes)?;
-            },
-            _ => panic!(
-                "DeltaByteArrayEncoder only supports ByteArrayType and FixedLenByteArrayType"
-            )
+        for byte_array in values {
+            let current = byte_array.data();
+            // Maximum prefix length that is shared between previous value and current
+            // value
+            let prefix_len = cmp::min(self.previous.len(), current.len());
+            let mut match_len = 0;
+            while match_len < prefix_len && self.previous[match_len] == current[match_len]
+            {
+                match_len += 1;
+            }
+            prefix_lengths.push(match_len as i32);
+            suffixes.push(byte_array.slice(match_len, byte_array.len() - match_len));
+            // Update previous for the next prefix
+            self.previous.clear();
+            self.previous.extend_from_slice(current);
         }
+        self.prefix_len_encoder.put(&prefix_lengths)?;
+        self.suffix_writer.put(&suffixes)?;
 
         Ok(())
     }
 
+    #[cold]
     fn encoding(&self) -> Encoding {
         Encoding::DELTA_BYTE_ARRAY
     }
@@ -1036,7 +1024,7 @@ mod tests {
         );
         run_test::<FixedLenByteArrayType>(
             2,
-            &[ByteArray::from("ab"), ByteArray::from("bc")],
+            &[ByteArray::from("ab").into(), ByteArray::from("bc").into()],
             4,
         );
     }

@@ -21,8 +21,6 @@ use std::{cmp, marker::PhantomData, mem};
 
 use super::rle::RleDecoder;
 
-use byteorder::{ByteOrder, LittleEndian};
-
 use crate::basic::*;
 use crate::data_type::*;
 use crate::data_type::private::*;
@@ -130,25 +128,31 @@ pub fn get_decoder<T: DataType>(
 // ----------------------------------------------------------------------
 // PLAIN Decoding
 
+#[derive(Default)]
+pub struct PlainDecoderDetails {
+    // The remaining number of values in the byte array
+    pub(crate) num_values: usize,
+
+    // The current starting index in the byte array. Not used when `T` is bool.
+    pub(crate) start: usize,
+
+    // The length for the type `T`. Only used when `T` is `FixedLenByteArrayType`
+    pub(crate) type_length: i32,
+
+    // The byte array to decode from. Not set if `T` is bool.
+    pub(crate) data: Option<ByteBufferPtr>,
+
+    // Read `data` bit by bit. Only set if `T` is bool.
+    pub(crate) bit_reader: Option<BitReader>,
+}
+
 /// Plain decoding that supports all types.
 /// Values are encoded back to back. For native types, data is encoded as little endian.
 /// Floating point types are encoded in IEEE.
 /// See [`PlainEncoder`](crate::encoding::PlainEncoder) for more information.
 pub struct PlainDecoder<T: DataType> {
-    // The remaining number of values in the byte array
-    num_values: usize,
-
-    // The current starting index in the byte array.
-    start: usize,
-
-    // The length for the type `T`. Only used when `T` is `FixedLenByteArrayType`
-    type_length: i32,
-
-    // The byte array to decode from. Not set if `T` is bool.
-    data: Option<ByteBufferPtr>,
-
-    // Read `data` bit by bit. Only set if `T` is bool.
-    bit_reader: Option<BitReader>,
+    // The binary details needed for decoding
+    inner: PlainDecoderDetails,
 
     // To allow `T` in the generic parameter for this struct. This doesn't take any
     // space.
@@ -159,11 +163,13 @@ impl<T: DataType> PlainDecoder<T> {
     /// Creates new plain decoder.
     pub fn new(type_length: i32) -> Self {
         PlainDecoder {
-            data: None,
-            bit_reader: None,
-            type_length,
-            num_values: 0,
-            start: 0,
+            inner: PlainDecoderDetails {
+                type_length,
+                num_values: 0,
+                start: 0,
+                data: None,
+                bit_reader: None,
+            },
             _phantom: PhantomData,
         }
     }
@@ -172,24 +178,13 @@ impl<T: DataType> PlainDecoder<T> {
 impl<T: DataType> Decoder<T> for PlainDecoder<T> {
     #[inline]
     fn set_data(&mut self, data: ByteBufferPtr, num_values: usize) -> Result<()> {
-        self.num_values = num_values;
-
-        match T::get_physical_type() {
-            Type::BOOLEAN => {
-                self.bit_reader = Some(BitReader::new(data))
-            }
-            _ => {
-                self.start = 0;
-                self.data = Some(data);
-            }
-        };
-
+        T::T::set_data(&mut self.inner, data, num_values);
         Ok(())
     }
 
     #[inline]
     fn values_left(&self) -> usize {
-        self.num_values
+        self.inner.num_values
     }
 
     #[inline]
@@ -199,108 +194,7 @@ impl<T: DataType> Decoder<T> for PlainDecoder<T> {
 
     #[inline]
     fn get(&mut self, buffer: &mut [T::T]) -> Result<usize> {
-        match T::get_physical_type() {
-            Type::BOOLEAN => {
-                assert!(self.bit_reader.is_some());
-
-                let bit_reader = self.bit_reader.as_mut().unwrap();
-                let num_values = cmp::min(buffer.len(), self.num_values);
-                let values_read = bit_reader.get_batch(&mut buffer[..num_values], 1);
-                self.num_values -= values_read;
-
-                Ok(values_read)
-            },
-            Type::FIXED_LEN_BYTE_ARRAY | Type::BYTE_ARRAY => {
-                assert!(self.data.is_some());
-                if T::get_physical_type() == Type::FIXED_LEN_BYTE_ARRAY {
-                    assert!(self.type_length > 0);
-                }
-
-                let data = self.data.as_mut().unwrap();
-                let num_values = cmp::min(buffer.len(), self.num_values);
-                for i in 0..num_values {
-                    let len: usize = match T::get_physical_type() {
-                        Type::FIXED_LEN_BYTE_ARRAY => self.type_length as usize,
-                        Type::BYTE_ARRAY => {
-                            let len = read_num_bytes!(u32, 4, data.start_from(self.start).as_ref());
-                            self.start += mem::size_of::<u32>();
-                            len as usize
-                        },
-                        _ => unreachable!()
-                    };
-
-                    if data.len() < self.start + len {
-                        return Err(eof_err!("Not enough bytes to decode"));
-                    }
-
-                    let val: &mut ByteArray = buffer[i]
-                        .as_mut_any()
-                        .downcast_mut()
-                        .unwrap();
-
-                    val.set_data(data.range(self.start, len));
-                    self.start += len;
-                }
-                self.num_values -= num_values;
-
-                Ok(num_values)
-            },
-            Type::INT96 => {
-                // TODO - Remove the duplication between this and the general slice method
-                assert!(self.data.is_some());
-
-                let data = self.data.as_ref().unwrap();
-                let num_values = cmp::min(buffer.len(), self.num_values);
-                let bytes_left = data.len() - self.start;
-                let bytes_to_decode = 12 * num_values;
-                if bytes_left < bytes_to_decode {
-                    return Err(eof_err!("Not enough bytes to decode"));
-                }
-
-                let data_range = data.range(self.start, bytes_to_decode);
-                let bytes: &[u8] = data_range.data();
-                self.start += bytes_to_decode;
-
-                let mut pos = 0; // position in byte array
-                for i in 0..num_values {
-                    let elem0 = LittleEndian::read_u32(&bytes[pos..pos + 4]);
-                    let elem1 = LittleEndian::read_u32(&bytes[pos + 4..pos + 8]);
-                    let elem2 = LittleEndian::read_u32(&bytes[pos + 8..pos + 12]);
-
-                    buffer[i]
-                        .as_mut_any()
-                        .downcast_mut::<Int96>()
-                        .unwrap()
-                        .set_data(elem0, elem1, elem2);
-
-                    pos += 12;
-                }
-                self.num_values -= num_values;
-
-                Ok(num_values)
-            },
-            _ => {
-                assert!(self.data.is_some());
-
-                let data = self.data.as_mut().unwrap();
-                let num_values = cmp::min(buffer.len(), self.num_values);
-                let bytes_left = data.len() - self.start;
-                let bytes_to_decode = mem::size_of::<T::T>() * num_values;
-                if bytes_left < bytes_to_decode {
-                    return Err(eof_err!("Not enough bytes to decode"));
-                }
-
-                // SAFETY: Raw types should be as per the standard rust bit-vectors
-                unsafe {
-                    let raw_buffer = &mut T::T::slice_as_bytes_mut(buffer)[..bytes_to_decode];
-                    raw_buffer.copy_from_slice(data.range(self.start, bytes_to_decode).as_ref());
-                };
-                self.start += bytes_to_decode;
-                self.num_values -= num_values;
-
-                Ok(num_values)
-            }
-        }
+        T::T::decode(buffer, &mut self.inner)
     }
 }
 
@@ -384,7 +278,7 @@ impl<T: DataType> Decoder<T> for DictDecoder<T> {
 /// See [`RleValueEncoder`](crate::encoding::RleValueEncoder) for more information.
 pub struct RleValueDecoder<T: DataType> {
     values_left: usize,
-    decoder: Option<RleDecoder>,
+    decoder: RleDecoder,
     _phantom: PhantomData<T>,
 }
 
@@ -392,27 +286,9 @@ impl<T: DataType> RleValueDecoder<T> {
     pub fn new() -> Self {
         Self {
             values_left: 0,
-            decoder: None,
+            decoder: RleDecoder::new(1),
             _phantom: PhantomData,
         }
-    }
-
-    #[inline]
-    fn set_data_internal(
-        &mut self,
-        data: ByteBufferPtr,
-        num_values: usize,
-    ) -> Result<()> {
-        // We still need to remove prefix of i32 from the stream.
-        let i32_size = mem::size_of::<i32>();
-        let data_size = read_num_bytes!(i32, i32_size, data.as_ref()) as usize;
-        let rle_decoder = self
-            .decoder
-            .as_mut()
-            .expect("RLE decoder is not initialized");
-        rle_decoder.set_data(data.range(i32_size, data_size));
-        self.values_left = num_values;
-        Ok(())
     }
 }
 
@@ -423,11 +299,15 @@ impl<T: DataType> Decoder<T> for RleValueDecoder<T> {
         data: ByteBufferPtr,
         num_values: usize,
     ) -> Result<()> {
+        // Only support RLE value reader for boolean values with bit width of 1.
         ensure_phys_ty!(Type::BOOLEAN, "RleValueDecoder only supports BoolType");
 
-        // Only support RLE value reader for boolean values with bit width of 1.
-        self.decoder = Some(RleDecoder::new(1));
-        self.set_data_internal(data, num_values)
+        // We still need to remove prefix of i32 from the stream.
+        const I32_SIZE: usize = mem::size_of::<i32>();
+        let data_size = read_num_bytes!(i32, I32_SIZE, data.as_ref()) as usize;
+        self.decoder.set_data(data.range(I32_SIZE, data_size));
+        self.values_left = num_values;
+        Ok(())
     }
 
     #[inline]
@@ -442,12 +322,8 @@ impl<T: DataType> Decoder<T> for RleValueDecoder<T> {
 
     #[inline]
     fn get(&mut self, buffer: &mut [T::T]) -> Result<usize> {
-        let rle_decoder = self
-            .decoder
-            .as_mut()
-            .expect("RLE decoder is not initialized");
         let num_values = cmp::min(buffer.len(), self.values_left);
-        let values_read = rle_decoder.get_batch(&mut buffer[..num_values])?;
+        let values_read = self.decoder.get_batch(&mut buffer[..num_values])?;
         self.values_left -= values_read;
         Ok(values_read)
     }
@@ -874,15 +750,13 @@ impl<'m, T: DataType> Decoder<T> for DeltaByteArrayDecoder<T> {
 
     fn get(&mut self, buffer: &mut [T::T]) -> Result<usize> {
         match T::get_physical_type() {
-            Type::BYTE_ARRAY | Type::FIXED_LEN_BYTE_ARRAY => {
-                assert!(self.suffix_decoder.is_some());
-
+            ty @ Type::BYTE_ARRAY | ty @ Type::FIXED_LEN_BYTE_ARRAY => {
                 let num_values = cmp::min(buffer.len(), self.num_values);
                 let mut v: [ByteArray; 1] = [ByteArray::new(); 1];
                 for i in 0..num_values {
                     // Process suffix
                     // TODO: this is awkward - maybe we should add a non-vectorized API?
-                    let suffix_decoder = self.suffix_decoder.as_mut().unwrap();
+                    let suffix_decoder = self.suffix_decoder.as_mut().expect("decoder not initialized");
                     suffix_decoder.get(&mut v[..])?;
                     let suffix = v[0].data();
 
@@ -896,11 +770,19 @@ impl<'m, T: DataType> Decoder<T> for DeltaByteArrayDecoder<T> {
 
                     let data = ByteBufferPtr::new(result.clone());
 
-                    buffer[i]
-                        .as_mut_any()
-                        .downcast_mut::<ByteArray>()
-                        .unwrap()
-                        .set_data(data);
+                    match ty {
+                        Type::BYTE_ARRAY => buffer[i]
+                            .as_mut_any()
+                            .downcast_mut::<ByteArray>()
+                            .unwrap()
+                            .set_data(data),
+                        Type::FIXED_LEN_BYTE_ARRAY => buffer[i]
+                            .as_mut_any()
+                            .downcast_mut::<FixedLenByteArray>()
+                            .unwrap()
+                            .set_data(data),
+                        _ => unreachable!(),
+                    };
 
                     self.previous_value = result;
                     self.current_idx += 1;
@@ -1097,12 +979,12 @@ mod tests {
 
     #[test]
     fn test_plain_decode_fixed_len_byte_array() {
-        let mut data = vec![ByteArray::default(); 3];
+        let mut data = vec![FixedLenByteArray::default(); 3];
         data[0].set_data(ByteBufferPtr::new(String::from("bird").into_bytes()));
         data[1].set_data(ByteBufferPtr::new(String::from("come").into_bytes()));
         data[2].set_data(ByteBufferPtr::new(String::from("flow").into_bytes()));
         let data_bytes = FixedLenByteArrayType::to_byte_array(&data[..]);
-        let mut buffer = vec![ByteArray::default(); 3];
+        let mut buffer = vec![FixedLenByteArray::default(); 3];
         test_plain_decode::<FixedLenByteArrayType>(
             ByteBufferPtr::new(data_bytes),
             3,
@@ -1501,7 +1383,7 @@ mod tests {
     }
 
     impl ToByteArray<FixedLenByteArrayType> for FixedLenByteArrayType {
-        fn to_byte_array(data: &[ByteArray]) -> Vec<u8> {
+        fn to_byte_array(data: &[FixedLenByteArray]) -> Vec<u8> {
             let mut v = vec![];
             for d in data {
                 let buf = d.data();
