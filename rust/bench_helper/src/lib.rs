@@ -167,6 +167,14 @@ macro_rules! bench_main {
                     $( $group("cpu_cycles", cpu_cycles); )+
                 }
 
+                if let Some(stalled_cpu_cycles) = Perf::hardware("stalled_fe_cycles", Hardware::StalledCyclesFrontend) {
+                    $( $group("stalled_fe_cycles", stalled_cpu_cycles); )+
+                }
+
+                if let Some(stalled_cpu_cycles) = Perf::hardware("stalled_be_cycles", Hardware::StalledCyclesBackend) {
+                    $( $group("stalled_be_cycles", stalled_be_cycles); )+
+                }
+
                 if let Some(cache_misses) = Perf::hardware("cache misses", Hardware::CacheMisses) {
                     $( $group("cache_misses", cache_misses); )+
                 }
