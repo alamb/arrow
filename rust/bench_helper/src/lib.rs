@@ -8,10 +8,10 @@ pub use criterion::measurement::Measurement;
 
 pub use stats_alloc;
 
-#[cfg(all(target_arch="x86_64", target_os="linux"))]
+#[cfg(all(feature="perf_stats", target_arch="x86_64", target_os="linux"))]
 pub use perfcnt;
 
-#[cfg(all(target_arch="x86_64", target_os="linux"))]
+#[cfg(all(feature="perf_stats", target_arch="x86_64", target_os="linux"))]
 pub mod perf;
 
 pub mod alloc;
@@ -149,6 +149,32 @@ macro_rules! bench_main {
         #[global_allocator]
         static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
+        #[cfg(all(feature="perf_stats", target_arch="x86_64", target_os="linux"))]
+        fn perf_stats() {
+            use $crate::perfcnt::linux::{HardwareEventType as Hardware};
+            use $crate::perf::Perf;
+
+            if let Some(cpu_cycles) = Perf::hardware("cycles", Hardware::RefCPUCycles) {
+                $( $group("cpu_cycles", cpu_cycles); )+
+            }
+
+            if let Some(stalled_cpu_cycles) = Perf::hardware("stalled_fe_cycles", Hardware::StalledCyclesFrontend) {
+                $( $group("stalled_fe_cycles", stalled_cpu_cycles); )+
+            }
+
+            if let Some(stalled_cpu_cycles) = Perf::hardware("stalled_be_cycles", Hardware::StalledCyclesBackend) {
+                $( $group("stalled_be_cycles", stalled_cpu_cycles); )+
+            }
+
+            if let Some(cache_misses) = Perf::hardware("cache misses", Hardware::CacheMisses) {
+                $( $group("cache_misses", cache_misses); )+
+            }
+
+            if let Some(branch_misses) = Perf::hardware("branch misses", Hardware::BranchMisses) {
+                $( $group("branch_misses", branch_misses); )+
+            }
+        }
+
         fn main() {
             let wall_time = $crate::measurement::WallTime;
             $( $group("wall_time", wall_time); )+
@@ -159,30 +185,8 @@ macro_rules! bench_main {
             let reallocs = $crate::alloc::Alloc::reallocations(&GLOBAL);
             $( $group("reallocs", reallocs); )+
 
-            if cfg!(all(target_arch="x86_64", target_os="linux")) {
-                use $crate::perfcnt::linux::{HardwareEventType as Hardware};
-                use $crate::perf::Perf;
-
-                if let Some(cpu_cycles) = Perf::hardware("cycles", Hardware::RefCPUCycles) {
-                    $( $group("cpu_cycles", cpu_cycles); )+
-                }
-
-                if let Some(stalled_cpu_cycles) = Perf::hardware("stalled_fe_cycles", Hardware::StalledCyclesFrontend) {
-                    $( $group("stalled_fe_cycles", stalled_cpu_cycles); )+
-                }
-
-                if let Some(stalled_cpu_cycles) = Perf::hardware("stalled_be_cycles", Hardware::StalledCyclesBackend) {
-                    $( $group("stalled_be_cycles", stalled_be_cycles); )+
-                }
-
-                if let Some(cache_misses) = Perf::hardware("cache misses", Hardware::CacheMisses) {
-                    $( $group("cache_misses", cache_misses); )+
-                }
-
-                if let Some(branch_misses) = Perf::hardware("branch misses", Hardware::BranchMisses) {
-                    $( $group("branch_misses", branch_misses); )+
-                }
-            }
+            #[cfg(all(feature="perf_stats", target_arch="x86_64", target_os="linux"))]
+            perf_stats();
 
             $crate::Criterion::default()
                 .configure_from_args()
