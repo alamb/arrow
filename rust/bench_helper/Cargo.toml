@@ -4,11 +4,11 @@ version = "0.1.0"
 authors = ["Greg Bowyer <gbowyer@fastmail.co.uk>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = []
+perf_stats = ["perfcnt"]
 
 [dependencies]
 criterion = "0.3"
 stats_alloc = "0.1.8"
-
-[target.'cfg(all(target_arch="x86_64", target_os="linux"))'.dependencies]
-perfcnt = "0.6"
+perfcnt = { version = "0.6", optional = true }

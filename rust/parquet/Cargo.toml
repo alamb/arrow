@@ -56,6 +56,7 @@ bench_helper = { path = "../bench_helper" }
 
 [features]
 default = ["arrow", "snap", "brotli", "flate2", "lz4", "zstd", "base64"]
+bench_perf_stats = ["bench_helper/perf_stats"]
 
 [[bench]]
 name = "compression"
