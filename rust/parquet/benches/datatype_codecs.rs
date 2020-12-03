@@ -26,7 +26,7 @@ use bench_helper::*;
 mod common;
 use common::*;
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use parquet::{
     data_type::*,
@@ -61,7 +61,7 @@ fn setup_encoder_bench<M, T>(
     mname: &str,
     c: &mut Criterion<M>,
     batch_sizes: &[usize],
-    make_encoder: fn(Rc<ColumnDescriptor>, Rc<MemTracker>) -> Box<dyn Encoder<T>>,
+    make_encoder: fn(Arc<ColumnDescriptor>, Arc<MemTracker>) -> Box<dyn Encoder<T>>,
 ) where
     M: Measurement,
     T: DataType + GenRandomValueType<T>,
@@ -76,8 +76,8 @@ fn setup_encoder_bench<M, T>(
         // Make the objects we dont care about upfront to avoid benchmarking things like vec::new
         let batch_size = *batch_size as usize;
         let (bytes, values) = T::gen_values(batch_size);
-        let mem_tracker = Rc::new(MemTracker::new());
-        let col_desc = Rc::new(col_desc(0, T::get_physical_type()));
+        let mem_tracker = Arc::new(MemTracker::new());
+        let col_desc = Arc::new(col_desc(0, T::get_physical_type()));
         let mut encoder = make_encoder(col_desc, mem_tracker);
 
         group.throughput(Throughput::Bytes(bytes as u64));
@@ -99,7 +99,7 @@ fn setup_decoder_bench<M, T>(
     c: &mut Criterion<M>,
     num_values: usize,
     batch_sizes: &[usize],
-    make_encoder: fn(Rc<ColumnDescriptor>, Rc<MemTracker>) -> Box<dyn Encoder<T>>,
+    make_encoder: fn(Arc<ColumnDescriptor>, Arc<MemTracker>) -> Box<dyn Encoder<T>>,
     make_decoder: fn() -> Box<dyn Decoder<T>>,
 ) where
     M: Measurement,
@@ -111,8 +111,8 @@ fn setup_decoder_bench<M, T>(
     let mut group = c.benchmark_group(bench_name);
 
     let (_, values) = T::gen_values(num_values);
-    let mem_tracker = Rc::new(MemTracker::new());
-    let col_desc = Rc::new(col_desc(0, T::get_physical_type()));
+    let mem_tracker = Arc::new(MemTracker::new());
+    let col_desc = Arc::new(col_desc(0, T::get_physical_type()));
     let mut encoder = make_encoder(col_desc, mem_tracker);
     encoder.put(&values).expect("put() should be Ok");
     let buffer = encoder.flush_buffer().expect("flush_buffer() should be OK");
@@ -159,8 +159,8 @@ fn setup_decoder_dict_bench<M, T>(
     let mut group = c.benchmark_group(bench_name);
 
     let (_, values) = T::gen_values(num_values);
-    let mem_tracker = Rc::new(MemTracker::new());
-    let col_desc = Rc::new(col_desc(0, T::get_physical_type()));
+    let mem_tracker = Arc::new(MemTracker::new());
+    let col_desc = Arc::new(col_desc(0, T::get_physical_type()));
     let mut encoder = DictEncoder::<T>::new(col_desc, mem_tracker);
     encoder.put(&values).expect("put() should be Ok");
     let buffer = encoder.flush_buffer().expect("flush_buffer() should be OK");
