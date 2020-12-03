@@ -280,23 +280,18 @@ impl<T: DataType> DictEncoder<T> {
         }
 
         if index == HASH_SLOT_EMPTY {
-            index = self.uniques.size() as i32;
-            self.hash_slots[j] = index;
-            self.add_dict_key(value.clone());
-
-            if self.uniques.size()
-                > (self.hash_table_size as f32 * MAX_HASH_LOAD) as usize
-            {
-                self.double_table_size();
-            }
+            index = self.insert_fresh_slot(j, value.clone());
         }
 
         self.buffered_indices.push(index);
         Ok(())
     }
 
-    #[inline]
-    fn add_dict_key(&mut self, value: T::T) {
+    #[inline(never)]
+    fn insert_fresh_slot(&mut self, slot: usize, value: T::T) -> i32 {
+        let index = self.uniques.size() as i32;
+        self.hash_slots[slot] = index;
+
         let (base_size, num_elements) = value.dict_encoding_size();
 
         let unique_size = match T::get_physical_type() {
@@ -307,6 +302,14 @@ impl<T: DataType> DictEncoder<T> {
 
         self.uniques_size_in_bytes += unique_size;
         self.uniques.push(value);
+
+        if self.uniques.size()
+            > (self.hash_table_size as f32 * MAX_HASH_LOAD) as usize
+        {
+            self.double_table_size();
+        }
+
+        index
     }
 
     #[inline]
