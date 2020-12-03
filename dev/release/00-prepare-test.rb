@@ -286,6 +286,13 @@ class PrepareTest < Test::Unit::TestCase
                      ],
                    },
                    {
+                     path: "rust/bench_helper/Cargo.toml",
+                     hunks: [
+                       ["-version = \"#{@snapshot_version}\"",
+                        "+version = \"#{@release_version}\""],
+                     ],
+                   },
+                   {
                      path: "rust/datafusion/Cargo.toml",
                      hunks: [
                        ["-version = \"#{@snapshot_version}\"",
@@ -521,6 +528,13 @@ class PrepareTest < Test::Unit::TestCase
                      hunks: [
                        ["-version = \"#{@release_version}\"",
                         "+version = \"#{@next_snapshot_version}\""],
+                     ],
+                   },
+                   {
+                     path: "rust/bench_helper/Cargo.toml",
+                     hunks: [
+                       ["-version = \"#{@snapshot_version}\"",
+                        "+version = \"#{@release_version}\""],
                      ],
                    },
                    {
