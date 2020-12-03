@@ -57,6 +57,7 @@ RUN mkdir -p \
         /arrow/rust/arrow-pyarrow-integration-testing/src \
         /arrow/rust/arrow-flight/src \
         /arrow/rust/arrow/src \
+        /arrow/rust/bench_helper/src  \
         /arrow/rust/benchmarks/src \
         /arrow/rust/datafusion/src \
         /arrow/rust/integration-testing/src  \
@@ -67,6 +68,7 @@ RUN mkdir -p \
         /arrow/rust/arrow-pyarrow-integration-testing/src/lib.rs  \
         /arrow/rust/arrow-flight/src/lib.rs \
         /arrow/rust/arrow/src/lib.rs \
+        /arrow/rust/bench_helper/src/lib.rs  \
         /arrow/rust/benchmarks/src/lib.rs \
         /arrow/rust/datafusion/src/lib.rs \
         /arrow/rust/integration-testing/src/lib.rs  \
