@@ -19,7 +19,7 @@ extern crate parquet;
 extern crate rand;
 
 use rand::{thread_rng, Rng};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use parquet::{
     basic::*,
@@ -141,5 +141,5 @@ pub fn col_desc(type_length: i32, primitive_ty: Type) -> ColumnDescriptor {
         .with_length(type_length)
         .build()
         .unwrap();
-    ColumnDescriptor::new(Rc::new(ty), 0, 0, ColumnPath::new(vec![]))
+    ColumnDescriptor::new(Arc::new(ty), 0, 0, ColumnPath::new(vec![]))
 }
