@@ -17,7 +17,7 @@
 
 //! Contains all supported encoders for Parquet.
 
-use std::{cmp, io::Write, marker::PhantomData, mem};
+use std::{cmp, io::Write, marker::PhantomData};
 
 use crate::basic::*;
 use crate::data_type::*;
