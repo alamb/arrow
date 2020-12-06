@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![feature(test)]
+//#![feature(test)]
 extern crate parquet;
 extern crate rand;
 
