@@ -102,7 +102,7 @@ impl ArrayData {
 
     /// Returns a builder to construct a `ArrayData` instance.
     #[inline]
-    pub const fn builder(data_type: DataType) -> ArrayDataBuilder {
+    pub fn builder(data_type: DataType) -> ArrayDataBuilder {
         ArrayDataBuilder::new(data_type)
     }
 
@@ -268,7 +268,7 @@ pub struct ArrayDataBuilder {
 
 impl ArrayDataBuilder {
     #[inline]
-    pub const fn new(data_type: DataType) -> Self {
+    pub fn new(data_type: DataType) -> Self {
         Self {
             data_type,
             len: 0,

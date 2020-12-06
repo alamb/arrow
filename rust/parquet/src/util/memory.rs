@@ -72,8 +72,9 @@ impl MemTracker {
             .current_memory_usage
             .fetch_add(num_bytes, Ordering::Acquire)
             + num_bytes;
-        self.max_memory_usage
-            .fetch_max(new_current, Ordering::Acquire);
+
+        //self.max_memory_usage
+        //.fetch_max(new_current, Ordering::Acquire);
     }
 }
 
