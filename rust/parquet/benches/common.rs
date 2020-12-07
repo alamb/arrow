@@ -99,7 +99,7 @@ impl GenRandomValueType<ByteArrayType> for ByteArrayType {
 }
 
 impl GenRandomValueType<FixedLenByteArrayType> for ByteArray {
-    fn gen() -> FixedLenByteArray {
+    fn gen() -> parquet::data_type::ByteArray {
         let mut rng = thread_rng();
         // Fixed size of 2000
         const SIZE: usize = 2000;
