@@ -17,11 +17,10 @@
 
 //! Contains all supported encoders for Parquet.
 
-use std::{cmp, io::Write, marker::PhantomData};
+use std::{cmp, io::Write, marker::PhantomData, mem};
 
 use crate::basic::*;
 use crate::data_type::*;
-use crate::data_type::private::ParquetValueType;
 use crate::encodings::rle::RleEncoder;
 use crate::errors::{ParquetError, Result};
 use crate::schema::types::ColumnDescPtr;
@@ -130,7 +129,6 @@ impl<T: DataType> PlainEncoder<T> {
 }
 
 impl<T: DataType> Encoder<T> for PlainEncoder<T> {
-    #[cold]
     fn encoding(&self) -> Encoding {
         Encoding::PLAIN
     }
@@ -140,7 +138,7 @@ impl<T: DataType> Encoder<T> for PlainEncoder<T> {
     }
 
     #[inline]
-    fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
+    default fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
         self.buffer.write_all(self.bit_writer.flush_buffer())?;
         self.buffer.flush()?;
         self.bit_writer.clear();
@@ -148,9 +146,59 @@ impl<T: DataType> Encoder<T> for PlainEncoder<T> {
         Ok(self.buffer.consume())
     }
 
-    #[inline]
-    fn put(&mut self, values: &[T::T]) -> Result<()> {
-        T::T::encode(values, &mut self.buffer, &mut self.bit_writer)?;
+    default fn put(&mut self, _values: &[T::T]) -> Result<()> {
+        unreachable!()
+    }
+}
+
+impl<T: SliceAsBytesDataType> Encoder<T> for PlainEncoder<T>
+where
+    T::T: SliceAsBytes,
+{
+    default fn put(&mut self, values: &[T::T]) -> Result<()> {
+        let bytes = T::T::slice_as_bytes(values);
+        self.buffer.write_all(bytes)?;
+        Ok(())
+    }
+}
+
+impl Encoder<BoolType> for PlainEncoder<BoolType> {
+    fn put(&mut self, values: &[bool]) -> Result<()> {
+        for v in values {
+            self.bit_writer.put_value(*v as u64, 1);
+        }
+        Ok(())
+    }
+}
+
+impl Encoder<Int96Type> for PlainEncoder<Int96Type> {
+    fn put(&mut self, values: &[Int96]) -> Result<()> {
+        for v in values {
+            self.buffer.write_all(v.as_bytes())?;
+        }
+        self.buffer.flush()?;
+        Ok(())
+    }
+}
+
+impl Encoder<ByteArrayType> for PlainEncoder<ByteArrayType> {
+    fn put(&mut self, values: &[ByteArray]) -> Result<()> {
+        for v in values {
+            self.buffer
+                .write_all(&(v.len().to_le() as u32).as_bytes())?;
+            self.buffer.write_all(v.data())?;
+        }
+        self.buffer.flush()?;
+        Ok(())
+    }
+}
+
+impl Encoder<FixedLenByteArrayType> for PlainEncoder<FixedLenByteArrayType> {
+    fn put(&mut self, values: &[ByteArray]) -> Result<()> {
+        for v in values {
+            self.buffer.write_all(v.data())?;
+        }
+        self.buffer.flush()?;
         Ok(())
     }
 }
@@ -247,6 +295,7 @@ impl<T: DataType> DictEncoder<T> {
 
     /// Writes out the dictionary values with RLE encoding in a byte buffer, and return
     /// the result.
+    #[inline]
     pub fn write_indices(&mut self) -> Result<ByteBufferPtr> {
         // TODO: the caller should allocate the buffer
         let buffer_len = self.estimated_data_encoded_size();
@@ -280,36 +329,25 @@ impl<T: DataType> DictEncoder<T> {
         }
 
         if index == HASH_SLOT_EMPTY {
-            index = self.insert_fresh_slot(j, value.clone());
+            index = self.uniques.size() as i32;
+            self.hash_slots[j] = index;
+            self.add_dict_key(value.clone());
+
+            if self.uniques.size()
+                > (self.hash_table_size as f32 * MAX_HASH_LOAD) as usize
+            {
+                self.double_table_size();
+            }
         }
 
         self.buffered_indices.push(index);
         Ok(())
     }
 
-    #[inline(never)]
-    fn insert_fresh_slot(&mut self, slot: usize, value: T::T) -> i32 {
-        let index = self.uniques.size() as i32;
-        self.hash_slots[slot] = index;
-
-        let (base_size, num_elements) = value.dict_encoding_size();
-
-        let unique_size = match T::get_physical_type() {
-            Type::BYTE_ARRAY => base_size + num_elements,
-            Type::FIXED_LEN_BYTE_ARRAY => self.desc.type_length() as usize,
-            _ => base_size
-        };
-
-        self.uniques_size_in_bytes += unique_size;
+    #[inline]
+    fn add_dict_key(&mut self, value: T::T) {
+        self.uniques_size_in_bytes += self.get_encoded_size(&value);
         self.uniques.push(value);
-
-        if self.uniques.size()
-            > (self.hash_table_size as f32 * MAX_HASH_LOAD) as usize
-        {
-            self.double_table_size();
-        }
-
-        index
     }
 
     #[inline]
@@ -324,6 +362,7 @@ impl<T: DataType> DictEncoder<T> {
         }
     }
 
+    #[inline]
     fn double_table_size(&mut self) {
         let new_size = self.hash_table_size * 2;
         let mut new_hash_slots = Buffer::new().with_mem_tracker(self.mem_tracker.clone());
@@ -362,7 +401,7 @@ impl<T: DataType> Encoder<T> for DictEncoder<T> {
         Ok(())
     }
 
-    #[cold]
+    #[inline]
     fn encoding(&self) -> Encoding {
         Encoding::PLAIN_DICTIONARY
     }
@@ -377,6 +416,33 @@ impl<T: DataType> Encoder<T> for DictEncoder<T> {
     #[inline]
     fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
         self.write_indices()
+    }
+}
+
+/// Provides encoded size for a data type.
+/// This is a workaround to calculate dictionary size in bytes.
+trait DictEncodedSize<T: DataType> {
+    fn get_encoded_size(&self, value: &T::T) -> usize;
+}
+
+impl<T: DataType> DictEncodedSize<T> for DictEncoder<T> {
+    #[inline]
+    default fn get_encoded_size(&self, _: &T::T) -> usize {
+        mem::size_of::<T::T>()
+    }
+}
+
+impl DictEncodedSize<ByteArrayType> for DictEncoder<ByteArrayType> {
+    #[inline]
+    fn get_encoded_size(&self, value: &ByteArray) -> usize {
+        mem::size_of::<u32>() + value.len()
+    }
+}
+
+impl DictEncodedSize<FixedLenByteArrayType> for DictEncoder<FixedLenByteArrayType> {
+    #[inline]
+    fn get_encoded_size(&self, _value: &ByteArray) -> usize {
+        self.desc.type_length() as usize
     }
 }
 
@@ -406,29 +472,16 @@ impl<T: DataType> RleValueEncoder<T> {
 
 impl<T: DataType> Encoder<T> for RleValueEncoder<T> {
     #[inline]
-    fn put(&mut self, values: &[T::T]) -> Result<()> {
-        ensure_phys_ty!(Type::BOOLEAN, "RleValueEncoder only supports BoolType");
-
-        if self.encoder.is_none() {
-            self.encoder = Some(RleEncoder::new(1, DEFAULT_RLE_BUFFER_LEN));
-        }
-        let rle_encoder = self.encoder.as_mut().unwrap();
-        for value in values {
-            let value = value.as_u64()?;
-            if !rle_encoder.put(value)? {
-                return Err(general_err!("RLE buffer is full"));
-            }
-        }
-        Ok(())
+    default fn put(&mut self, _values: &[T::T]) -> Result<()> {
+        panic!("RleValueEncoder only supports BoolType");
     }
 
-    #[cold]
     fn encoding(&self) -> Encoding {
         Encoding::RLE
     }
 
     #[inline]
-    fn estimated_data_encoded_size(&self) -> usize {
+    default fn estimated_data_encoded_size(&self) -> usize {
         match self.encoder {
             Some(ref enc) => enc.len(),
             None => 0,
@@ -436,9 +489,33 @@ impl<T: DataType> Encoder<T> for RleValueEncoder<T> {
     }
 
     #[inline]
+    default fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
+        panic!("RleValueEncoder only supports BoolType");
+    }
+}
+
+impl Encoder<BoolType> for RleValueEncoder<BoolType> {
+    #[inline]
+    default fn put(&mut self, values: &[bool]) -> Result<()> {
+        if self.encoder.is_none() {
+            self.encoder = Some(RleEncoder::new(1, DEFAULT_RLE_BUFFER_LEN));
+        }
+        let rle_encoder = self.encoder.as_mut().unwrap();
+        for value in values {
+            if !rle_encoder.put(*value as u64)? {
+                return Err(general_err!("RLE buffer is full"));
+            }
+        }
+        Ok(())
+    }
+
+    #[inline]
     fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
-        ensure_phys_ty!(Type::BOOLEAN, "RleValueEncoder only supports BoolType");
-        let rle_encoder = self.encoder.as_mut().expect("RLE value encoder is not initialized");
+        assert!(
+            self.encoder.is_some(),
+            "RLE value encoder is not initialized"
+        );
+        let rle_encoder = self.encoder.as_mut().unwrap();
 
         // Flush all encoder buffers and raw values
         let encoded_data = {
@@ -447,7 +524,7 @@ impl<T: DataType> Encoder<T> for RleValueEncoder<T> {
             // Note that buf does not have any offset, all data is encoded bytes
             let len = (buf.len() as i32).to_le();
             let len_bytes = len.as_bytes();
-            let mut encoded_data = vec![];
+            let mut encoded_data = Vec::new();
             encoded_data.extend_from_slice(len_bytes);
             encoded_data.extend_from_slice(buf);
             encoded_data
@@ -548,7 +625,6 @@ impl<T: DataType> DeltaBitPackEncoder<T> {
     }
 
     // Write current delta buffer (<= 'block size' values) into bit writer
-    #[inline(never)]
     fn flush_block_values(&mut self) -> Result<()> {
         if self.values_in_block == 0 {
             return Ok(());
@@ -641,7 +717,6 @@ impl<T: DataType> Encoder<T> for DeltaBitPackEncoder<T> {
         Ok(())
     }
 
-    #[cold]
     fn encoding(&self) -> Encoding {
         Encoding::DELTA_BINARY_PACKED
     }
@@ -687,36 +762,71 @@ trait DeltaBitPackEncoderConversion<T: DataType> {
 
 impl<T: DataType> DeltaBitPackEncoderConversion<T> for DeltaBitPackEncoder<T> {
     #[inline]
-    fn assert_supported_type() {
-        ensure_phys_ty!(Type::INT32 | Type::INT64,
-            "DeltaBitPackDecoder only supports Int32Type and Int64Type");
+    default fn assert_supported_type() {
+        panic!("DeltaBitPackDecoder only supports Int32Type and Int64Type");
     }
 
     #[inline]
-    fn as_i64(&self, values: &[T::T], index: usize) -> i64 {
-        values[index]
-            .as_i64()
-            .expect("DeltaBitPackDecoder only supports Int32Type and Int64Type")
+    default fn as_i64(&self, _values: &[T::T], _index: usize) -> i64 {
+        0
+    }
+
+    #[inline]
+    default fn subtract(&self, _left: i64, _right: i64) -> i64 {
+        0
+    }
+
+    #[inline]
+    default fn subtract_u64(&self, _left: i64, _right: i64) -> u64 {
+        0
+    }
+}
+
+impl DeltaBitPackEncoderConversion<Int32Type> for DeltaBitPackEncoder<Int32Type> {
+    #[inline]
+    fn assert_supported_type() {
+        // no-op: supported type
+    }
+
+    #[inline]
+    fn as_i64(&self, values: &[i32], index: usize) -> i64 {
+        values[index] as i64
     }
 
     #[inline]
     fn subtract(&self, left: i64, right: i64) -> i64 {
         // It is okay for values to overflow, wrapping_sub wrapping around at the boundary
-        match T::get_physical_type() {
-            Type::INT32 => (left as i32).wrapping_sub(right as i32) as i64,
-            Type::INT64 => left.wrapping_sub(right),
-            _ => panic!("DeltaBitPackDecoder only supports Int32Type and Int64Type")
-        }
+        (left as i32).wrapping_sub(right as i32) as i64
     }
 
     #[inline]
     fn subtract_u64(&self, left: i64, right: i64) -> u64 {
-        match T::get_physical_type() {
-            // Conversion of i32 -> u32 -> u64 is to avoid non-zero left most bytes in int repr
-            Type::INT32 => (left as i32).wrapping_sub(right as i32) as u32 as u64,
-            Type::INT64 => left.wrapping_sub(right) as u64,
-            _ => panic!("DeltaBitPackDecoder only supports Int32Type and Int64Type")
-        }
+        // Conversion of i32 -> u32 -> u64 is to avoid non-zero left most bytes in int
+        // representation
+        (left as i32).wrapping_sub(right as i32) as u32 as u64
+    }
+}
+
+impl DeltaBitPackEncoderConversion<Int64Type> for DeltaBitPackEncoder<Int64Type> {
+    #[inline]
+    fn assert_supported_type() {
+        // no-op: supported type
+    }
+
+    #[inline]
+    fn as_i64(&self, values: &[i64], index: usize) -> i64 {
+        values[index]
+    }
+
+    #[inline]
+    fn subtract(&self, left: i64, right: i64) -> i64 {
+        // It is okay for values to overflow, wrapping_sub wrapping around at the boundary
+        left.wrapping_sub(right)
+    }
+
+    #[inline]
+    fn subtract_u64(&self, left: i64, right: i64) -> u64 {
+        left.wrapping_sub(right) as u64
     }
 }
 
@@ -749,28 +859,10 @@ impl<T: DataType> DeltaLengthByteArrayEncoder<T> {
 }
 
 impl<T: DataType> Encoder<T> for DeltaLengthByteArrayEncoder<T> {
-    fn put(&mut self, values: &[T::T]) -> Result<()> {
-        ensure_phys_ty!(Type::BYTE_ARRAY | Type::FIXED_LEN_BYTE_ARRAY,
-            "DeltaLengthByteArrayEncoder only supports ByteArrayType"
-        );
-
-        let val_it = || values
-            .iter()
-            .map(|x| x.as_any().downcast_ref::<ByteArray>().unwrap());
-
-        let lengths: Vec<i32> = val_it()
-            .map(|byte_array| byte_array.len() as i32)
-            .collect();
-        self.len_encoder.put(&lengths)?;
-        for byte_array in val_it() {
-            self.encoded_size += byte_array.len();
-            self.data.push(byte_array.clone());
-        }
-
-        Ok(())
+    default fn put(&mut self, _values: &[T::T]) -> Result<()> {
+        panic!("DeltaLengthByteArrayEncoder only supports ByteArrayType");
     }
 
-    #[cold]
     fn encoding(&self) -> Encoding {
         Encoding::DELTA_LENGTH_BYTE_ARRAY
     }
@@ -779,11 +871,26 @@ impl<T: DataType> Encoder<T> for DeltaLengthByteArrayEncoder<T> {
         self.len_encoder.estimated_data_encoded_size() + self.encoded_size
     }
 
-    fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
-        ensure_phys_ty!(Type::BYTE_ARRAY | Type::FIXED_LEN_BYTE_ARRAY,
-            "DeltaLengthByteArrayEncoder only supports ByteArrayType"
-        );
+    default fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
+        panic!("DeltaLengthByteArrayEncoder only supports ByteArrayType");
+    }
+}
 
+impl Encoder<ByteArrayType> for DeltaLengthByteArrayEncoder<ByteArrayType> {
+    fn put(&mut self, values: &[ByteArray]) -> Result<()> {
+        let lengths: Vec<i32> = values
+            .iter()
+            .map(|byte_array| byte_array.len() as i32)
+            .collect();
+        self.len_encoder.put(&lengths)?;
+        for byte_array in values {
+            self.encoded_size += byte_array.len();
+            self.data.push(byte_array.clone());
+        }
+        Ok(())
+    }
+
+    fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
         let mut total_bytes = vec![];
         let lengths = self.len_encoder.flush_buffer()?;
         total_bytes.extend_from_slice(lengths.data());
@@ -792,7 +899,6 @@ impl<T: DataType> Encoder<T> for DeltaLengthByteArrayEncoder<T> {
         });
         self.data.clear();
         self.encoded_size = 0;
-
         Ok(ByteBufferPtr::new(total_bytes))
     }
 }
@@ -804,7 +910,7 @@ impl<T: DataType> Encoder<T> for DeltaLengthByteArrayEncoder<T> {
 /// encoding, followed by suffixes with DELTA_LENGTH_BYTE_ARRAY encoding.
 pub struct DeltaByteArrayEncoder<T: DataType> {
     prefix_len_encoder: DeltaBitPackEncoder<Int32Type>,
-    suffix_writer: DeltaLengthByteArrayEncoder<ByteArrayType>,
+    suffix_writer: DeltaLengthByteArrayEncoder<T>,
     previous: Vec<u8>,
     _phantom: PhantomData<T>,
 }
@@ -813,8 +919,8 @@ impl<T: DataType> DeltaByteArrayEncoder<T> {
     /// Creates new delta byte array encoder.
     pub fn new() -> Self {
         Self {
-            prefix_len_encoder: DeltaBitPackEncoder::new(),
-            suffix_writer: DeltaLengthByteArrayEncoder::new(),
+            prefix_len_encoder: DeltaBitPackEncoder::<Int32Type>::new(),
+            suffix_writer: DeltaLengthByteArrayEncoder::<T>::new(),
             previous: vec![],
             _phantom: PhantomData,
         }
@@ -822,19 +928,32 @@ impl<T: DataType> DeltaByteArrayEncoder<T> {
 }
 
 impl<T: DataType> Encoder<T> for DeltaByteArrayEncoder<T> {
-    fn put(&mut self, values: &[T::T]) -> Result<()> {
+    default fn put(&mut self, _values: &[T::T]) -> Result<()> {
+        panic!(
+            "DeltaByteArrayEncoder only supports ByteArrayType and FixedLenByteArrayType"
+        );
+    }
+
+    fn encoding(&self) -> Encoding {
+        Encoding::DELTA_BYTE_ARRAY
+    }
+
+    fn estimated_data_encoded_size(&self) -> usize {
+        self.prefix_len_encoder.estimated_data_encoded_size()
+            + self.suffix_writer.estimated_data_encoded_size()
+    }
+
+    default fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
+        panic!(
+            "DeltaByteArrayEncoder only supports ByteArrayType and FixedLenByteArrayType"
+        );
+    }
+}
+
+impl Encoder<ByteArrayType> for DeltaByteArrayEncoder<ByteArrayType> {
+    fn put(&mut self, values: &[ByteArray]) -> Result<()> {
         let mut prefix_lengths: Vec<i32> = vec![];
         let mut suffixes: Vec<ByteArray> = vec![];
-
-        let values = values.iter()
-            .map(|x| x.as_any())
-            .map(|x| match T::get_physical_type() {
-                Type::BYTE_ARRAY => x.downcast_ref::<ByteArray>().unwrap(),
-                Type::FIXED_LEN_BYTE_ARRAY => x.downcast_ref::<FixedLenByteArray>().unwrap(),
-                _ => panic!(
-                    "DeltaByteArrayEncoder only supports ByteArrayType and FixedLenByteArrayType"
-                )
-            });
 
         for byte_array in values {
             let current = byte_array.data();
@@ -854,40 +973,36 @@ impl<T: DataType> Encoder<T> for DeltaByteArrayEncoder<T> {
         }
         self.prefix_len_encoder.put(&prefix_lengths)?;
         self.suffix_writer.put(&suffixes)?;
-
         Ok(())
     }
 
-    #[cold]
-    fn encoding(&self) -> Encoding {
-        Encoding::DELTA_BYTE_ARRAY
-    }
+    fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
+        // TODO: investigate if we can merge lengths and suffixes
+        // without copying data into new vector.
+        let mut total_bytes = vec![];
+        // Insert lengths ...
+        let lengths = self.prefix_len_encoder.flush_buffer()?;
+        total_bytes.extend_from_slice(lengths.data());
+        // ... followed by suffixes
+        let suffixes = self.suffix_writer.flush_buffer()?;
+        total_bytes.extend_from_slice(suffixes.data());
 
-    fn estimated_data_encoded_size(&self) -> usize {
-        self.prefix_len_encoder.estimated_data_encoded_size()
-            + self.suffix_writer.estimated_data_encoded_size()
+        self.previous.clear();
+        Ok(ByteBufferPtr::new(total_bytes))
+    }
+}
+
+impl Encoder<FixedLenByteArrayType> for DeltaByteArrayEncoder<FixedLenByteArrayType> {
+    fn put(&mut self, values: &[ByteArray]) -> Result<()> {
+        let s: &mut DeltaByteArrayEncoder<ByteArrayType> =
+            unsafe { mem::transmute(self) };
+        s.put(values)
     }
 
     fn flush_buffer(&mut self) -> Result<ByteBufferPtr> {
-        match T::get_physical_type() {
-            Type::BYTE_ARRAY | Type::FIXED_LEN_BYTE_ARRAY => {
-                // TODO: investigate if we can merge lengths and suffixes
-                // without copying data into new vector.
-                let mut total_bytes = vec![];
-                // Insert lengths ...
-                let lengths = self.prefix_len_encoder.flush_buffer()?;
-                total_bytes.extend_from_slice(lengths.data());
-                // ... followed by suffixes
-                let suffixes = self.suffix_writer.flush_buffer()?;
-                total_bytes.extend_from_slice(suffixes.data());
-
-                self.previous.clear();
-                Ok(ByteBufferPtr::new(total_bytes))
-            }
-            _ => panic!(
-                "DeltaByteArrayEncoder only supports ByteArrayType and FixedLenByteArrayType"
-            )
-        }
+        let s: &mut DeltaByteArrayEncoder<ByteArrayType> =
+            unsafe { mem::transmute(self) };
+        s.flush_buffer()
     }
 }
 
@@ -1027,7 +1142,7 @@ mod tests {
         );
         run_test::<FixedLenByteArrayType>(
             2,
-            &[ByteArray::from("ab").into(), ByteArray::from("bc").into()],
+            &[ByteArray::from("ab"), ByteArray::from("bc")],
             4,
         );
     }
@@ -1147,7 +1262,7 @@ mod tests {
         fn test_dict_internal(total: usize, type_length: i32) -> Result<()>;
     }
 
-    impl<T: DataType + RandGen<T>> EncodingTester<T> for T {
+    impl<T: DataType> EncodingTester<T> for T {
         fn test_internal(enc: Encoding, total: usize, type_length: i32) -> Result<()> {
             let mut encoder = create_test_encoder::<T>(type_length, enc);
             let mut decoder = create_test_decoder::<T>(type_length, enc);

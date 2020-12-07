@@ -222,7 +222,7 @@ pub enum Encoding {
 // Mirrors `parquet::CompressionCodec`
 
 /// Supported compression algorithms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Compression {
     UNCOMPRESSED,
     SNAPPY,
