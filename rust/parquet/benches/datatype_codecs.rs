@@ -19,7 +19,10 @@
 extern crate parquet;
 extern crate rand;
 
-use bench_helper::*;
+
+use criterion::*;
+use criterion::measurement::*;
+//use bench_helper::*;
 
 #[allow(dead_code)]
 #[path = "common.rs"]
@@ -239,7 +242,9 @@ macro_rules! make_bench {
 
 }
 
-fn decoding<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
+//fn decoding<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
+fn decoding<M: Measurement>(c: &mut Criterion<M>) {
+    let measure_name: &str = "wall_time";
     make_bench! {
         name = "plain";
         measure_name = measure_name;
@@ -305,5 +310,5 @@ fn decoding<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
     };
 }
 
-bench_group!(decoder, decoding);
-bench_main!(decoder);
+criterion_group!(decoder, decoding);
+criterion_main!(decoder);

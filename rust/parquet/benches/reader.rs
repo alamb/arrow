@@ -18,7 +18,9 @@
 //#![feature(test)]
 extern crate parquet;
 
-use bench_helper::*;
+use criterion::*;
+use criterion::measurement::*;
+//use bench_helper::*;
 
 use std::{collections::HashMap, fs::File, path::Path};
 
@@ -29,7 +31,9 @@ use parquet::{
     schema::{parser::parse_message_type, types::ColumnPath},
 };
 
-fn record_reader_10k_collect<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
+//fn record_reader_10k_collect<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
+fn record_reader_10k_collect<M: Measurement>(c: &mut Criterion<M>) {
+    let measure_name: &str = "wall_time";
     let path = Path::new("data/10k-v2.parquet");
     let file = File::open(&path).unwrap();
     let len = file.metadata().unwrap().len();
@@ -60,7 +64,9 @@ fn record_reader_10k_collect<M: Measurement>(measure_name: &str, c: &mut Criteri
     });
 }
 
-fn record_reader_stock_simulated_collect<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
+//fn record_reader_stock_simulated_collect<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
+fn record_reader_stock_simulated_collect<M: Measurement>(c: &mut Criterion<M>) {
+    let measure_name: &str = "wall_time";
     let path = Path::new("data/stock_simulated.parquet");
     let file = File::open(&path).unwrap();
     let len = file.metadata().unwrap().len();
@@ -78,7 +84,9 @@ fn record_reader_stock_simulated_collect<M: Measurement>(measure_name: &str, c: 
     });
 }
 
-fn record_reader_stock_simulated_column<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
+//fn record_reader_stock_simulated_column<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
+fn record_reader_stock_simulated_column<M: Measurement>(c: &mut Criterion<M>) {
+    let measure_name: &str = "wall_time";
     // WARNING THIS BENCH IS INTENDED FOR THIS DATA FILE ONLY
     // COPY OR CHANGE THE DATA FILE MAY NOT WORK AS YOU WISH
     let path = Path::new("data/stock_simulated.parquet");
@@ -170,6 +178,6 @@ fn record_reader_stock_simulated_column<M: Measurement>(measure_name: &str, c: &
     });
 }
 
-bench_group!(benches, record_reader_10k_collect, record_reader_stock_simulated_column,
+criterion_group!(benches, record_reader_10k_collect, record_reader_stock_simulated_column,
              record_reader_stock_simulated_collect);
-bench_main!(benches);
+criterion_main!(benches);

@@ -20,7 +20,10 @@ extern crate parquet;
 #[macro_use]
 extern crate lazy_static;
 
-use bench_helper::*;
+
+use criterion::*;
+use criterion::measurement::*;
+//use bench_helper::*;
 use std::{
     env,
     collections::HashMap,
@@ -109,7 +112,9 @@ lazy_static! {
         .collect();
 }
 
-fn compress<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
+//fn compress<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
+fn compress<M: Measurement>(c: &mut Criterion<M>) {
+    let measure_name: &str = "wall_time";
     for algo in COMPRESSION_ALGOS.iter() {
         let bench_name = format!("compress_{:?}::{}", algo, measure_name).to_lowercase();
         let mut group = c.benchmark_group(bench_name);
@@ -129,7 +134,9 @@ fn compress<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
     }
 }
 
-fn decompress<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
+//fn decompress<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
+fn decompress<M: Measurement>(c: &mut Criterion<M>) {
+    let measure_name: &str = "wall_time";
     for algo in COMPRESSION_ALGOS.iter() {
         let bench_name = format!("decompress_{:?}::{}", algo, measure_name).to_lowercase();
         let mut group = c.benchmark_group(bench_name);
@@ -150,5 +157,5 @@ fn decompress<M: Measurement>(measure_name: &str, c: &mut Criterion<M>) {
     }
 }
 
-bench_group!(benches, compress, decompress);
-bench_main!(benches);
+criterion_group!(benches, compress, decompress);
+criterion_main!(benches);
