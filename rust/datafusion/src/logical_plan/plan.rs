@@ -253,12 +253,12 @@ pub enum Partitioning {
 
 /// Trait that implements the [Visitor
 /// pattern](https://en.wikipedia.org/wiki/Visitor_pattern) for a
-/// depth first walk of `LogicalPlan` nodes. `pre_visit` is called
+/// depth first walk of [`LogicalPlan`] nodes. `pre_visit` is called
 /// before any children are visited, and then `post_visit` is called
 /// after all children have been visited.
 ////
 /// To use, define a struct that implements this trait and then invoke
-/// "LogicalPlan::accept".
+/// ['LogicalPlan::accept']
 ///
 /// For example, for a logical plan like:
 ///
@@ -299,10 +299,10 @@ pub trait PlanVisitor {
 }
 
 impl LogicalPlan {
-    /// returns all inputs in the logical plan. Returns Ok(true) if
-    /// all nodes were visited, and Ok(false) if any call to
-    /// `pre_visit` or `post_visit` returned Ok(false) and may have
-    /// cut short the recursion
+    /// Visits nodes in the `LogicalPlan` invoking the appropriate
+    /// `Visitor` methods. Returns Ok(true) if all nodes were visited,
+    /// and Ok(false) if any call to `pre_visit` or `post_visit`
+    /// returned Ok(false) and may have cut short the recursion
     pub fn accept<V>(&self, visitor: &mut V) -> std::result::Result<bool, V::Error>
     where
         V: PlanVisitor,
@@ -346,6 +346,107 @@ impl LogicalPlan {
         Ok(true)
     }
 }
+
+
+
+/// Trait that implements a variant of the [Visitor
+/// pattern](https://en.wikipedia.org/wiki/Visitor_pattern) to rewrite
+/// a tree of [`LogicalPlan`] nodes. `pre_visit` is called before any
+/// children are visited, each child is recursively rewritten, and
+/// then `mutate` is called after all children have been rewritten.
+////
+/// To use, define a struct that implements this trait and then invoke
+/// [`LogicalPlan::rewrite']
+///
+/// For example, for a logical plan like:
+///
+/// Projection: #id
+///    Filter: #state Eq Utf8(\"CO\")\
+///       CsvScan: employee.csv projection=Some([0, 3])";
+///
+/// The sequence of visit operations would be:
+/// ```text
+/// visitor.pre_visit(Projection)
+/// visitor.pre_visit(Filter)
+/// visitor.pre_visit(CsvScan)
+/// visitor.mutate(CsvScan)
+/// visitor.mutate(Filter)
+/// visitor.mutate(Projection)
+/// ```
+pub trait PlanRewriter {
+    /// The type of error returned by this rewriter
+    type Error;
+
+    /// Invoked on [`LogicalPlan`] before any of its child inputs have
+    /// been visited. If `Ok(true)` is returned, the recursion
+    /// continues. If `Err(..)` or Ok(false) are returned, the recursion
+    /// stops immediately and the error, if any, is returned to
+    /// `rewrite`. The provided default returns `Ok(true)`
+    fn pre_visit(&mut self, _plan: &LogicalPlan)
+                 -> std::result::Result<bool, Self::Error> {
+        Ok(true)
+    }
+
+    /// Invoked on [`LogicalPlan`] after all of its child inputs have
+    /// been rewritten.
+    fn mutate(
+        &mut self,
+        plan: LogicalPlan,
+    ) -> std::result::Result<LogicalPlan, Self::Error>;
+}
+
+
+impl LogicalPlan {
+    /// returns all inputs in the logical plan. Returns Ok(true) if
+    /// all nodes were visited, and Ok(false) if any call to
+    /// `pre_visit` or `post_visit` returned Ok(false) and may have
+    /// cut short the recursion
+    pub fn rewrite<R>(&self, rewriter: &mut R) -> std::result::Result<bool, R::Error>
+    where
+        R: PlanRewriter,
+    {
+        // if !visitor.pre_visit(self)? {
+        //     return Ok(false);
+        // }
+
+        // let recurse = match self {
+        //     LogicalPlan::Projection { input, .. } => input.accept(visitor)?,
+        //     LogicalPlan::Filter { input, .. } => input.accept(visitor)?,
+        //     LogicalPlan::Repartition { input, .. } => input.accept(visitor)?,
+        //     LogicalPlan::Aggregate { input, .. } => input.accept(visitor)?,
+        //     LogicalPlan::Sort { input, .. } => input.accept(visitor)?,
+        //     LogicalPlan::Join { left, right, .. } => {
+        //         left.accept(visitor)? && right.accept(visitor)?
+        //     }
+        //     LogicalPlan::Limit { input, .. } => input.accept(visitor)?,
+        //     LogicalPlan::Extension { node } => {
+        //         for input in node.inputs() {
+        //             if !input.accept(visitor)? {
+        //                 return Ok(false);
+        //             }
+        //         }
+        //         true
+        //     }
+        //     // plans without inputs
+        //     LogicalPlan::TableScan { .. }
+        //     | LogicalPlan::EmptyRelation { .. }
+        //     | LogicalPlan::CreateExternalTable { .. }
+        //     | LogicalPlan::Explain { .. } => true,
+        // };
+        // if !recurse {
+        //     return Ok(false);
+        // }
+
+        // if !visitor.post_visit(self)? {
+        //     return Ok(false);
+        // }
+
+        Ok(true)
+    }
+}
+
+
+
 
 // Various implementations for printing out LogicalPlans
 impl LogicalPlan {
