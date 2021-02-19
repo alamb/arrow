@@ -207,7 +207,9 @@ pub fn inputs(plan: &LogicalPlan) -> Vec<&LogicalPlan> {
     }
 }
 
-/// Returns a new logical plan based on the original one with inputs and expressions replaced
+/// Returns a new [`LogicalPlan`] plan node based on the original one
+/// with expressions and inputs replaced by `expr` and `inputs`,
+/// respectively
 pub fn from_plan(
     plan: &LogicalPlan,
     expr: &[Expr],
@@ -273,6 +275,8 @@ pub fn from_plan(
         | LogicalPlan::Explain { .. } => Ok(plan.clone()),
     }
 }
+
+
 
 /// Returns all direct children `Expression`s of `expr`.
 /// E.g. if the expression is "(a + 1) + 1", it returns ["a + 1", "1"] (as Expr objects)

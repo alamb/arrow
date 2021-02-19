@@ -231,6 +231,93 @@ impl LogicalPlan {
         }
     }
 
+    /// Replace all expressions in a [`LogicalPlan`] plan node with
+    /// those in `new_exprs`. The order of expressions in `new_exprs`
+    /// must match that returned by `expressions`
+    pub fn replace_exprs(
+        self,
+        new_exprs: Vec<Expr>;
+    ) -> Result<LogicalPlan> {
+
+
+        // Get expr 0
+        fn expr0(new_exprs: Vec<Expr>) -> Result<Expr> {
+            // TODO proper error handling here
+            assert_eq!(new_exprs.len(), 1);
+            Ok(new_exprs.pop().unwrap())
+        }
+
+        // return exprs[0]
+        fn expr0_1(new_exprs: Vec<Expr>) -> Result<(Expr, Expr)> {
+            // TODO proper error handling here
+            assert_eq!(new_exprs.len(), 2);
+            let expr1 = new_exprs.pop().unwrap();
+            let expr2 = new_exprs.pop().unwrap();
+            Ok((expr1, expr2))
+        }
+
+        match plan {
+            LogicalPlan::Projection { schema, expr, input  } => Ok(LogicalPlan::Projection {
+                expr: expr.to_vec(),
+                input,
+                schema,
+            }),
+            LogicalPlan::Filter { .. } => Ok(LogicalPlan::Filter {
+                predicate: expr[0].clone(),
+                input: Arc::new(inputs[0].clone()),
+            }),
+            LogicalPlan::Repartition {
+                partitioning_scheme,
+                ..
+            } => match partitioning_scheme {
+                Partitioning::RoundRobinBatch(n) => Ok(LogicalPlan::Repartition {
+                    partitioning_scheme: Partitioning::RoundRobinBatch(*n),
+                    input: Arc::new(inputs[0].clone()),
+                }),
+                Partitioning::Hash(_, n) => Ok(LogicalPlan::Repartition {
+                    partitioning_scheme: Partitioning::Hash(expr.to_owned(), *n),
+                    input: Arc::new(inputs[0].clone()),
+                }),
+            },
+            LogicalPlan::Aggregate {
+                group_expr, schema, ..
+            } => Ok(LogicalPlan::Aggregate {
+                group_expr: expr[0..group_expr.len()].to_vec(),
+                aggr_expr: expr[group_expr.len()..].to_vec(),
+                input: Arc::new(inputs[0].clone()),
+                schema: schema.clone(),
+            }),
+            LogicalPlan::Sort { .. } => Ok(LogicalPlan::Sort {
+                expr: expr.to_vec(),
+                input: Arc::new(inputs[0].clone()),
+            }),
+            LogicalPlan::Join {
+                join_type,
+                on,
+                schema,
+                ..
+            } => Ok(LogicalPlan::Join {
+                left: Arc::new(inputs[0].clone()),
+                right: Arc::new(inputs[1].clone()),
+                join_type: *join_type,
+                on: on.clone(),
+                schema: schema.clone(),
+            }),
+            LogicalPlan::Limit { n, .. } => Ok(LogicalPlan::Limit {
+                n: *n,
+                input: Arc::new(inputs[0].clone()),
+            }),
+            LogicalPlan::Extension { node } => Ok(LogicalPlan::Extension {
+                node: node.from_template(expr, inputs),
+            }),
+            LogicalPlan::EmptyRelation { .. }
+            | LogicalPlan::TableScan { .. }
+            | LogicalPlan::CreateExternalTable { .. }
+            | LogicalPlan::Explain { .. } => Ok(plan.clone()),
+        }
+    }
+
+
     /// Returns the (fixed) output schema for explain plans
     pub fn explain_schema() -> SchemaRef {
         SchemaRef::new(Schema::new(vec![

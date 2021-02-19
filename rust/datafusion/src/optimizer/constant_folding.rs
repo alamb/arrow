@@ -22,6 +22,7 @@ use arrow::datatypes::DataType;
 
 use crate::logical_plan::{DFSchemaRef, Expr, LogicalPlan, Operator};
 use crate::optimizer::optimizer::OptimizerRule;
+use crate::optimizer::utils;
 use crate::scalar::ScalarValue;
 use crate::{
     error::{DataFusionError, Result},
@@ -73,21 +74,17 @@ impl PlanRewriter for ConstantFoldingRewriter {
         // expressions that references non-projected columns within the same project plan or its
         // children plans.
 
-        // Note that the inputs have already been rewritten
+        // NOTE: the inputs have already been rewritten
 
-        // rewrite filter expressions. TODO apply constant folding to
-        // other nodes with expressions (e.g. Aggregate, Projection, etc)
-        let plan = if let LogicalPlan::Filter { predicate, input } = plan {
-            let schemas = input.all_schemas();
-            LogicalPlan::Filter {
-                // TODO avoid borrow here and rewrite predicate directly
-                predicate: optimize_expr(&predicate, &schemas)?,
-                input,
-            }
-        } else {
-            plan
-        };
-        Ok(plan)
+        let inputs = utils::inputs(plan);
+
+        let schemas = plan.all_schemas();
+        let expr = utils::expressions(&plan)
+            .iter()
+            .map(|e| optimize_expr(e, &schemas))
+            .collect::<Result<Vec<_>>>()?;
+
+        utils::from_plan(plan, &expr, &new_inputs)
     }
 }
 
