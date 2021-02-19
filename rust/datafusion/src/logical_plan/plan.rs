@@ -449,12 +449,10 @@ impl LogicalPlan {
                 aggr_expr,
                 schema,
             },
-            LogicalPlan::Sort { input, expr } => {
-                LogicalPlan::Sort {
-                    input: rewrite_input(input, rewriter)?,
-                    expr,
-                }
-            }
+            LogicalPlan::Sort { input, expr } => LogicalPlan::Sort {
+                input: rewrite_input(input, rewriter)?,
+                expr,
+            },
             LogicalPlan::Join {
                 left,
                 right,
@@ -468,14 +466,12 @@ impl LogicalPlan {
                 join_type,
                 schema,
             },
-            LogicalPlan::Limit { input, n } => {
-                LogicalPlan::Limit {
-                    input: rewrite_input(input, rewriter)?,
-                    n
-                }
-            }
+            LogicalPlan::Limit { input, n } => LogicalPlan::Limit {
+                input: rewrite_input(input, rewriter)?,
+                n,
+            },
             LogicalPlan::Extension { node } => {
-                // TODO add better pattern to extension node
+                // TODO clean up API for extension nodes
                 let new_inputs = node
                     .inputs()
                     .iter()
@@ -485,10 +481,7 @@ impl LogicalPlan {
                     })
                     .collect::<Result<Vec<_>, R::Error>>()?;
 
-                let node = node.from_template(
-                        &node.expressions(),
-                    &new_inputs
-                );
+                let node = node.from_template(&node.expressions(), &new_inputs);
 
                 LogicalPlan::Extension { node }
             }
@@ -509,12 +502,10 @@ impl LogicalPlan {
             LogicalPlan::EmptyRelation {
                 produce_one_row,
                 schema,
-            } => {
-                LogicalPlan::EmptyRelation {
-                    produce_one_row,
-                    schema,
-                }
-            }
+            } => LogicalPlan::EmptyRelation {
+                produce_one_row,
+                schema,
+            },
             LogicalPlan::CreateExternalTable {
                 schema,
                 name,

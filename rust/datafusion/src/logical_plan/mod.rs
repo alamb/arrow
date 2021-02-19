@@ -43,6 +43,7 @@ pub use expr::{
 pub use extension::UserDefinedLogicalNode;
 pub use operators::Operator;
 pub use plan::{
-    JoinType, LogicalPlan, Partitioning, PlanType, PlanVisitor, StringifiedPlan,
+    JoinType, LogicalPlan, Partitioning, PlanRewriter, PlanType, PlanVisitor,
+    StringifiedPlan,
 };
 pub use registry::FunctionRegistry;

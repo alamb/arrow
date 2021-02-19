@@ -18,15 +18,15 @@
 //! Boolean comparision rule rewrites redudant comparison expression involing boolean literal into
 //! unary expression.
 
-use std::sync::Arc;
-
 use arrow::datatypes::DataType;
 
-use crate::error::Result;
 use crate::logical_plan::{DFSchemaRef, Expr, LogicalPlan, Operator};
 use crate::optimizer::optimizer::OptimizerRule;
-use crate::optimizer::utils;
 use crate::scalar::ScalarValue;
+use crate::{
+    error::{DataFusionError, Result},
+    logical_plan::PlanRewriter,
+};
 
 /// Optimizer that simplifies comparison expressions involving boolean literals.
 ///
@@ -48,50 +48,46 @@ impl ConstantFolding {
 
 impl OptimizerRule for ConstantFolding {
     fn optimize(&self, plan: &LogicalPlan) -> Result<LogicalPlan> {
+        let mut rewriter = ConstantFoldingRewriter {};
+        plan.clone().rewrite(&mut rewriter)
+    }
+    fn name(&self) -> &str {
+        "constant_folding"
+    }
+}
+
+struct ConstantFoldingRewriter {}
+
+impl PlanRewriter for ConstantFoldingRewriter {
+    type Error = DataFusionError;
+
+    /// Invoked on [`LogicalPlan`] after all of its child inputs have
+    /// been rewritten and returns the rewritten plan
+    fn mutate(
+        &mut self,
+        plan: LogicalPlan,
+    ) -> std::result::Result<LogicalPlan, Self::Error> {
         // We need to pass down the all schemas within the plan tree to `optimize_expr` in order to
         // to evaluate expression types. For example, a projection plan's schema will only include
         // projected columns. With just the projected schema, it's not possible to infer types for
         // expressions that references non-projected columns within the same project plan or its
         // children plans.
 
-        match plan {
-            LogicalPlan::Filter { predicate, input } => Ok(LogicalPlan::Filter {
-                predicate: optimize_expr(predicate, &plan.all_schemas())?,
-                input: Arc::new(self.optimize(input)?),
-            }),
-            // Rest: recurse into plan, apply optimization where possible
-            LogicalPlan::Projection { .. }
-            | LogicalPlan::Aggregate { .. }
-            | LogicalPlan::Repartition { .. }
-            | LogicalPlan::CreateExternalTable { .. }
-            | LogicalPlan::Extension { .. }
-            | LogicalPlan::Sort { .. }
-            | LogicalPlan::Explain { .. }
-            | LogicalPlan::Limit { .. }
-            | LogicalPlan::Join { .. } => {
-                // apply the optimization to all inputs of the plan
-                let inputs = utils::inputs(plan);
-                let new_inputs = inputs
-                    .iter()
-                    .map(|plan| self.optimize(plan))
-                    .collect::<Result<Vec<_>>>()?;
+        // Note that the inputs have already been rewritten
 
-                let schemas = plan.all_schemas();
-                let expr = utils::expressions(plan)
-                    .iter()
-                    .map(|e| optimize_expr(e, &schemas))
-                    .collect::<Result<Vec<_>>>()?;
-
-                utils::from_plan(plan, &expr, &new_inputs)
+        // rewrite filter expressions. TODO apply constant folding to
+        // other nodes with expressions (e.g. Aggregate, Projection, etc)
+        let plan = if let LogicalPlan::Filter { predicate, input } = plan {
+            let schemas = input.all_schemas();
+            LogicalPlan::Filter {
+                // TODO avoid borrow here and rewrite predicate directly
+                predicate: optimize_expr(&predicate, &schemas)?,
+                input,
             }
-            LogicalPlan::TableScan { .. } | LogicalPlan::EmptyRelation { .. } => {
-                Ok(plan.clone())
-            }
-        }
-    }
-
-    fn name(&self) -> &str {
-        "constant_folding"
+        } else {
+            plan
+        };
+        Ok(plan)
     }
 }
 
@@ -301,6 +297,8 @@ fn optimize_expr(e: &Expr, schemas: &[&DFSchemaRef]) -> Result<Expr> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::logical_plan::{
         col, lit, max, min, DFField, DFSchema, LogicalPlanBuilder,
