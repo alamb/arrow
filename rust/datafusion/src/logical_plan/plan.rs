@@ -347,9 +347,6 @@ impl LogicalPlan {
     }
 }
 
-
-
-
 /// Trait that implements a variant of the [Visitor
 /// pattern](https://en.wikipedia.org/wiki/Visitor_pattern) to rewrite
 /// a tree of [`LogicalPlan`] nodes. `pre_visit` is called before any
@@ -386,7 +383,10 @@ pub trait PlanRewriter {
     /// If `Err(..)` or Ok(false) are returned, the recursion
     /// stops immediately and the error, if any, is returned to
     /// `rewrite`. The provided default returns `Ok(true)`
-    fn pre_visit(&mut self, _plan: &LogicalPlan) -> std::result::Result<bool, Self::Error> {
+    fn pre_visit(
+        &mut self,
+        _plan: &LogicalPlan,
+    ) -> std::result::Result<bool, Self::Error> {
         Ok(true)
     }
 
@@ -398,15 +398,17 @@ pub trait PlanRewriter {
     ) -> std::result::Result<LogicalPlan, Self::Error>;
 }
 
-
 impl LogicalPlan {
     /// Recursively rewrite this [`LogicalPlan`] using the `rewriter`
-    pub fn rewrite<R>(self, rewriter: &mut R) -> std::result::Result<LogicalPlan, R::Error>
+    pub fn rewrite<R>(
+        self,
+        rewriter: &mut R,
+    ) -> std::result::Result<LogicalPlan, R::Error>
     where
         R: PlanRewriter,
     {
         if !rewriter.pre_visit(&self)? {
-            return Ok(self)
+            return Ok(self);
         }
 
         // step 1: rewrite all inputs
@@ -416,58 +418,127 @@ impl LogicalPlan {
         // here and we avoid the potential for bugs related to not
         // rewriting some inputs
         let new_self = match self {
-            LogicalPlan::Projection { input, expr, schema } => {
-                LogicalPlan::Projection {
+            LogicalPlan::Projection {
+                input,
+                expr,
+                schema,
+            } => LogicalPlan::Projection {
+                input: rewrite_input(input, rewriter)?,
+                expr,
+                schema,
+            },
+            LogicalPlan::Filter { input, predicate } => LogicalPlan::Filter {
+                input: rewrite_input(input, rewriter)?,
+                predicate,
+            },
+            LogicalPlan::Repartition {
+                input,
+                partitioning_scheme,
+            } => LogicalPlan::Repartition {
+                input: rewrite_input(input, rewriter)?,
+                partitioning_scheme,
+            },
+            LogicalPlan::Aggregate {
+                input,
+                group_expr,
+                aggr_expr,
+                schema,
+            } => LogicalPlan::Aggregate {
+                input,
+                group_expr,
+                aggr_expr,
+                schema,
+            },
+            LogicalPlan::Sort { input, expr } => {
+                LogicalPlan::Sort {
                     input: rewrite_input(input, rewriter)?,
                     expr,
-                    schema
                 }
             }
-            LogicalPlan::Filter { input, predicate } => {
-                LogicalPlan::Filter {
-                    input: rewrite_input(input, rewriter)?,
-                    predicate,
-                }
-            }
-            LogicalPlan::Repartition { input, partitioning_scheme } => {
-                LogicalPlan::Repartition {
-                    input: rewrite_input(input, rewriter)?,
-                    partitioning_scheme,
-                }
-            }
-            LogicalPlan::Aggregate { input, group_expr, aggr_expr, schema  } => {
-                LogicalPlan::Aggregate { input, group_expr, aggr_expr, schema  }
-            }
-            LogicalPlan::Sort { input, expr } => {
-                LogicalPlan::Sort { input, expr }
-            }
-            LogicalPlan::Join { left, right, on, join_type, schema} => {
-                LogicalPlan::Join { left, right, on, join_type, schema}
-            }
+            LogicalPlan::Join {
+                left,
+                right,
+                on,
+                join_type,
+                schema,
+            } => LogicalPlan::Join {
+                left: rewrite_input(left, rewriter)?,
+                right: rewrite_input(right, rewriter)?,
+                on,
+                join_type,
+                schema,
+            },
             LogicalPlan::Limit { input, n } => {
-                LogicalPlan::Limit { input, n }
-            },
-            LogicalPlan::Extension { node } => {
-                for input in node.inputs() {
-                    if !input.accept(visitor)? {
-                        return Ok(false);
-                    }
+                LogicalPlan::Limit {
+                    input: rewrite_input(input, rewriter)?,
+                    n
                 }
-                true
-            },
+            }
+            LogicalPlan::Extension { node } => {
+                // TODO add better pattern to extension node
+                let new_inputs = node
+                    .inputs()
+                    .iter()
+                    .map(|&plan| {
+                        let plan: LogicalPlan = plan.clone();
+                        plan.rewrite(rewriter)
+                    })
+                    .collect::<Result<Vec<_>, R::Error>>()?;
 
-            LogicalPlan::TableScan { table_name, source, projection, projected_schema, filters } => {
-LogicalPlan::TableScan { table_name, source, projection, projected_schema, filters }
+                let node = node.from_template(
+                        &node.expressions(),
+                    &new_inputs
+                );
+
+                LogicalPlan::Extension { node }
             }
-            LogicalPlan::EmptyRelation { produce_one_row, schema } => {
-                LogicalPlan::EmptyRelation { produce_one_row, schema }
+
+            LogicalPlan::TableScan {
+                table_name,
+                source,
+                projection,
+                projected_schema,
+                filters,
+            } => LogicalPlan::TableScan {
+                table_name,
+                source,
+                projection,
+                projected_schema,
+                filters,
+            },
+            LogicalPlan::EmptyRelation {
+                produce_one_row,
+                schema,
+            } => {
+                LogicalPlan::EmptyRelation {
+                    produce_one_row,
+                    schema,
+                }
             }
-            LogicalPlan::CreateExternalTable { schema, name, location, file_type, has_header } => {
-                LogicalPlan::CreateExternalTable { schema, name, location, file_type, has_header }
-            }
-            LogicalPlan::Explain { verbose, plan, stringified_plans, schema } => {
-                LogicalPlan::Explain { verbose, plan, stringified_plans, schema }
-            }
+            LogicalPlan::CreateExternalTable {
+                schema,
+                name,
+                location,
+                file_type,
+                has_header,
+            } => LogicalPlan::CreateExternalTable {
+                schema,
+                name,
+                location,
+                file_type,
+                has_header,
+            },
+            LogicalPlan::Explain {
+                verbose,
+                plan,
+                stringified_plans,
+                schema,
+            } => LogicalPlan::Explain {
+                verbose,
+                plan: rewrite_input(plan, rewriter)?,
+                stringified_plans,
+                schema,
+            },
         };
 
         // And finally rewrite this node itself
@@ -476,8 +547,11 @@ LogicalPlan::TableScan { table_name, source, projection, projected_schema, filte
 }
 
 /// Unwrap and rewrite an Arc wrapped plan, cloning if necessary (Arc is still shared)
-fn rewrite_input<R>(arc_plan: Arc<LogicalPlan>, rewriter: &mut R) -> std::result::Result<Arc<LogicalPlan>, R::Error>
-    where
+fn rewrite_input<R>(
+    arc_plan: Arc<LogicalPlan>,
+    rewriter: &mut R,
+) -> std::result::Result<Arc<LogicalPlan>, R::Error>
+where
     R: PlanRewriter,
 {
     // Input may be still shared, if so, we must clone to rewrite/mutate
@@ -489,10 +563,6 @@ fn rewrite_input<R>(arc_plan: Arc<LogicalPlan>, rewriter: &mut R) -> std::result
     let rewritten_plan = plan.rewrite(rewriter)?;
     Ok(Arc::new(rewritten_plan))
 }
-
-
-
-
 
 // Various implementations for printing out LogicalPlans
 impl LogicalPlan {
