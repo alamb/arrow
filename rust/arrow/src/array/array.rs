@@ -617,6 +617,8 @@ mod tests {
         for i in 0..9 {
             assert!(a.is_null(i));
         }
+
+        panic!("test error");
     }
 
     #[test]
